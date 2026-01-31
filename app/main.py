@@ -2,6 +2,8 @@
 FastAPI application factory. Used by server.py and uvicorn.
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +12,15 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.common.http_response_model import CommonResponse
 from app.config import settings
+from app.ml.resume_ner import load_model
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load NER model once at startup when RESUME_NER_LOAD_DIR is set."""
+    load_model()
+    yield
+    # optional: cleanup on shutdown
 
 
 def get_app() -> FastAPI:
@@ -19,6 +30,7 @@ def get_app() -> FastAPI:
         docs_url=f"{settings.API_PREFIX}/docs",
         redoc_url=f"{settings.API_PREFIX}/redoc",
         openapi_url=f"{settings.API_PREFIX}/openapi.json",
+        lifespan=lifespan,
     )
 
     app.add_middleware(

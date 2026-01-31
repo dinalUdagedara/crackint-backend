@@ -70,8 +70,8 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 ## NER model path
 
-- Set **`RESUME_NER_LOAD_DIR`** in `.env` to the directory where your saved BERT-BiLSTM-CRF model, tokenizer, and config live (from your notebook’s save step).
-- Refactor the notebook’s `load_model()` and `parse_resume_hybrid()` into `app/ml/resume_ner.py` and wire them to this path.
+- The model is hosted on **Hugging Face**: [dinalUdagedara/resume-entity-extractor](https://huggingface.co/dinalUdagedara/resume-entity-extractor). To download it locally: run `python scripts/download_resume_ner_model.py` (requires `poetry install --with download` or `pip install huggingface_hub`), then set **`RESUME_NER_LOAD_DIR=./model/resume_ner`** in `.env`.
+- Alternatively, set `RESUME_NER_LOAD_DIR` to any directory that already contains the saved model (e.g. from your notebook or Google Drive). See **RESUME_NER_SETUP.md** for details.
 - If `RESUME_NER_LOAD_DIR` is not set or the path does not exist, the API still runs and returns stub/minimal rule-based extraction.
 
 ## API
@@ -92,3 +92,4 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 - `app/services/text_extraction.py` — PDF → text (PyMuPDF).
 - `app/common/` — Shared response model and exceptions.
 - `server.py` — Entry point for running the app.
+- `scripts/download_resume_ner_model.py` — Download the Resume NER model from Hugging Face to `model/resume_ner`.

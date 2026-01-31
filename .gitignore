@@ -38,3 +38,11 @@ venv
 .DS_Store
 logs
 log
+
+# ML model artifacts (large binaries — store separately, never in Git)
+model/
+models/
+*.pt
+*.pth
+*.bin
+*.onnx
