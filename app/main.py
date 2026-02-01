@@ -12,13 +12,15 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.common.http_response_model import CommonResponse
 from app.config import settings
-from app.ml.resume_ner import load_model
+from app.ml.resume_ner import load_model as load_resume_ner
+from app.ml.job_poster_ner import load_model as load_job_poster_ner
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load NER model once at startup when RESUME_NER_LOAD_DIR is set."""
-    load_model()
+    """Load NER models at startup when respective load dirs are set."""
+    load_resume_ner()
+    load_job_poster_ner()
     yield
     # optional: cleanup on shutdown
 
