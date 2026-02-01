@@ -19,7 +19,7 @@ ALLOWED_CONTENT_TYPES = {"application/pdf"}
     "/extract",
     response_model=CommonResponse[JobExtractResponse],
     name="Extract entities from job description",
-    summary="Extract entities (SKILL, OCCUPATION, etc.) from job description PDF or raw text.",
+    summary="Extract entities from job description PDF or raw text (job poster NER or resume NER fallback).",
 )
 async def extract_job_entities(
     file: UploadFile | None = File(default=None, description="Job description PDF file"),
@@ -30,7 +30,9 @@ async def extract_job_entities(
     - **file**: PDF upload (multipart/form-data), or
     - **text**: Form field with raw job description text.
 
-    Returns extracted entities: SKILL, OCCUPATION, EDUCATION, EXPERIENCE (and NAME/EMAIL if present).
+    Returns extracted entities. When job poster NER is loaded: JOB_TITLE, COMPANY, LOCATION,
+    SALARY, SKILLS_REQUIRED, EXPERIENCE_REQUIRED, EDUCATION_REQUIRED, JOB_TYPE.
+    Otherwise (fallback): SKILL, OCCUPATION, EDUCATION, EXPERIENCE.
     """
     if file is not None and text is not None:
         raise HTTPException(

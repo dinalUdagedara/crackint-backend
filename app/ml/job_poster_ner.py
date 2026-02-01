@@ -13,6 +13,15 @@ from transformers import BertModel, BertTokenizer
 
 from app.config import settings
 
+# Rule-based SALARY extraction (high recall; merged with model output in hybrid)
+SALARY_RE = re.compile(
+    r"\$[\d,]+\.?\d*\s*(k|K|M)?\s*(-|–|to)\s*\$?[\d,]+\.?\d*\s*(k|K|M)?"
+    r"|\$[\d,]+\.?\d*\s*(k|K|M)?"
+    r"|£[\d,]+\.?\d*\s*(k|K)?"
+    r"|\d+\s*(k|K)\s*-\s*\d+\s*(k|K)"
+    r"|Competitive|competitive"
+)
+
 # Model, tokenizer, device, and label mapping (set by load_model)
 _tokenizer: Any = None
 _model: Any = None
@@ -110,6 +119,18 @@ def load_model() -> None:
     _model.eval()
 
 
+def _clean_entity(s: str) -> str:
+    """Strip leading/trailing punctuation and whitespace from extracted entity text."""
+    if not s:
+        return s
+    s = s.strip()
+    while s and s[-1] in ",.;:!?)]}\"'":
+        s = s[:-1].rstrip()
+    while s and s[0] in "([{\"'":
+        s = s[1:].lstrip()
+    return s
+
+
 def _parse_job_poster(
     text: str,
     max_len: int = 512,
@@ -142,7 +163,7 @@ def _parse_job_poster(
         preds = _model(inp, mask_t)
     pred_tags = [_id2label.get(preds[0][i], "O") for i in first_idx]
 
-    # Build entity dict: handle B-X and leading I-X
+    # Build entity dict: handle B-X and leading I-X; clean and dedupe
     entities: Dict[str, List[str]] = {}
     i = 0
     while i < len(words):
@@ -155,7 +176,10 @@ def _parse_job_poster(
             while i < len(words) and i < len(pred_tags) and pred_tags[i] == f"I-{entity_type}":
                 phrase.append(words[i])
                 i += 1
-            entities.setdefault(entity_type, []).append(" ".join(phrase))
+            raw = " ".join(phrase)
+            cleaned = _clean_entity(raw)
+            if cleaned:
+                entities.setdefault(entity_type, []).append(cleaned)
         elif tag.startswith("I-"):
             entity_type = tag[2:]
             if prev_tag not in (f"B-{entity_type}", f"I-{entity_type}"):
@@ -164,45 +188,59 @@ def _parse_job_poster(
                 while i < len(words) and i < len(pred_tags) and pred_tags[i] == f"I-{entity_type}":
                     phrase.append(words[i])
                     i += 1
-                entities.setdefault(entity_type, []).append(" ".join(phrase))
+                raw = " ".join(phrase)
+                cleaned = _clean_entity(raw)
+                if cleaned:
+                    entities.setdefault(entity_type, []).append(cleaned)
             else:
                 i += 1
         else:
             i += 1
+    for k in entities:
+        entities[k] = list(dict.fromkeys(entities[k]))
     return words, pred_tags, entities
+
+
+def _extract_salary_rules(text: str) -> List[str]:
+    """Extract salary-like spans from text using regex. Deduplicated."""
+    return list(dict.fromkeys(m.group(0).strip() for m in SALARY_RE.finditer(text)))
 
 
 def parse_job_poster_hybrid(text: str) -> Dict[str, List[str]]:
     """
     Extract entities from job poster text using the job poster NER model.
-    Returns a dict with keys JOB_TITLE, COMPANY, LOCATION, SALARY, SKILLS_REQUIRED,
-    EXPERIENCE_REQUIRED, EDUCATION_REQUIRED, JOB_TYPE (lists of strings).
-    When model is not loaded, returns empty entities.
+    Returns only entity types that have at least one value (trained or rule-based).
+    E.g. with current SkillSpan-trained model: SKILLS_REQUIRED and SALARY only.
+    When model is not loaded, returns empty dict.
     """
     text = text.strip()
     if not text:
-        return _empty_entities()
+        return {}
 
     if not is_model_loaded():
-        return _empty_entities()
+        return {}
 
     _, _, entities = _parse_job_poster(text)
     base = _empty_entities()
     for k in base:
         base[k] = entities.get(k, [])
-    return _normalize_entities(base)
+    sal = _extract_salary_rules(text)
+    if sal:
+        base["SALARY"] = list(dict.fromkeys((base["SALARY"] or []) + sal))
+    normalized = _normalize_entities(base)
+    return {k: v for k, v in normalized.items() if v}
 
 
 def _normalize_entities(entities: Dict[str, List[str]]) -> Dict[str, List[str]]:
-    """Strip trailing punctuation from phrases, dedupe, preserve order."""
+    """Strip punctuation from phrases, dedupe (case-insensitive), preserve order."""
     result = _empty_entities()
     for k, vals in entities.items():
         if k not in result:
             result[k] = []
-        seen = set()
-        out = []
+        seen: set[tuple[str, str]] = set()
+        out: List[str] = []
         for v in vals:
-            v = v.rstrip(".,;:!?)\"'").strip()
+            v = _clean_entity(v)
             if not v:
                 continue
             key = (k, v.lower())
