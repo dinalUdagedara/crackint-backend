@@ -23,8 +23,9 @@ class Settings(BaseSettings):
 
     # NER model: directory where saved model, tokenizer, and config are stored
     RESUME_NER_LOAD_DIR: Optional[str] = None
+    JOB_POSTER_NER_LOAD_DIR: Optional[str] = None
 
-    # Upload limits for resume files (PDF)
+    # Upload limits for resume/job PDFs (MB)
     MAX_UPLOAD_SIZE_MB: int = 10
 
 

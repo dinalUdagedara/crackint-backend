@@ -1,6 +1,6 @@
 # Crackint Backend API
 
-Backend for **Crackint** — a personalized interview prep platform. FastAPI + Python; resume NER extraction (implemented), with chat sessions, AI feedback, skill-gap analysis, and more planned.
+Backend for **Crackint** — a personalized interview prep platform. FastAPI + Python; resume and job description NER extraction (implemented), with chat sessions, AI feedback, skill-gap analysis, and more planned.
 
 ## About / Features
 
@@ -12,6 +12,7 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 **Resume & CV**  
 - **Resume/CV NER extraction** *(implemented)* — Upload PDF or paste text; extract NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE (BERT-BiLSTM-CRF + hybrid rules).  
+- **Job description NER extraction** *(implemented)* — Upload job description PDF or paste text; when **job poster NER** is set (`JOB_POSTER_NER_LOAD_DIR`), extract JOB_TITLE, COMPANY, LOCATION, SALARY, SKILLS_REQUIRED, EXPERIENCE_REQUIRED, EDUCATION_REQUIRED, JOB_TYPE; otherwise fallback to resume NER (SKILL, OCCUPATION, etc.).  
 - **Custom CV parsing** — PDF/image parsing with copy-paste fallback; structured CV profile for downstream features.  
 - **CV scoring & dashboard** — Rate CV strength; overall readiness combining CV strength, session performance, and skill gaps.  
 - **CV–job suitability alerts** — Warn when job poster demands skills missing from CV; suggest updates or learning.
@@ -51,7 +52,7 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
    ```bash
    cp .env.example .env
-   # Edit .env: set RESUME_NER_LOAD_DIR to your saved NER model directory if you have one
+   # Edit .env: set RESUME_NER_LOAD_DIR and/or JOB_POSTER_NER_LOAD_DIR to your model directories
    ```
 
 3. Start the server:
@@ -68,11 +69,15 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 4. Open docs: [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
 
-## NER model path
+## NER model paths
 
+**Resume NER**  
 - The model is hosted on **Hugging Face**: [dinalUdagedara/resume-entity-extractor](https://huggingface.co/dinalUdagedara/resume-entity-extractor). To download it locally: run `python scripts/download_resume_ner_model.py` (requires `poetry install --with download` or `pip install huggingface_hub`), then set **`RESUME_NER_LOAD_DIR=./model/resume_ner`** in `.env`.
 - Alternatively, set `RESUME_NER_LOAD_DIR` to any directory that already contains the saved model (e.g. from your notebook or Google Drive). See **RESUME_NER_SETUP.md** for details.
 - If `RESUME_NER_LOAD_DIR` is not set or the path does not exist, the API still runs and returns stub/minimal rule-based extraction.
+
+**Job poster NER**  
+- Set **`JOB_POSTER_NER_LOAD_DIR`** to the directory containing your job poster NER model (e.g. `./model/job_poster_ner`). The folder must contain `bert_bilstm_crf_state.pt`, `ner_config.json`, and the tokenizer files (`vocab.txt`, etc.). If not set or the path does not exist, job description extraction falls back to the resume NER pipeline.
 
 ## API
 
@@ -81,14 +86,20 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
   - Either upload a **PDF file** (multipart form field `file`), or
   - Send raw text (form field `text`).
   - Response: `{ "success": true, "message": "...", "payload": { "entities": { "NAME": [...], "EMAIL": [...], "SKILL": [...], ... }, "raw_text": "..." } }`.
+- **POST /api/v1/jobs/extract** — Extract entities from a job description.
+  - Either upload a **PDF file** (multipart form field `file`), or
+  - Send raw text (form field `text`).
+  - When job poster NER is used: `entities` include JOB_TITLE, COMPANY, LOCATION, SALARY, SKILLS_REQUIRED, EXPERIENCE_REQUIRED, EDUCATION_REQUIRED, JOB_TYPE. Otherwise (fallback): SKILL, OCCUPATION, EDUCATION, EXPERIENCE.
 
 ## Project layout
 
 - `app/main.py` — FastAPI app factory.
-- `app/api/router.py` — Central router; includes health and resume routers.
+- `app/api/router.py` — Central router; includes health, resume, and job routers.
 - `app/api/resume/` — Resume upload + NER extraction (route, service, schemas).
+- `app/api/job/` — Job description upload + NER extraction (route, service, schemas).
 - `app/api/health/` — Health check stub.
-- `app/ml/resume_ner.py` — NER integration (refactor notebook load + `parse_resume_hybrid` here).
+- `app/ml/resume_ner.py` — Resume NER (load + `parse_resume_hybrid`).
+- `app/ml/job_poster_ner.py` — Job poster NER (load + `parse_job_poster_hybrid`); used for job description extraction when `JOB_POSTER_NER_LOAD_DIR` is set.
 - `app/services/text_extraction.py` — PDF → text (PyMuPDF).
 - `app/common/` — Shared response model and exceptions.
 - `server.py` — Entry point for running the app.
