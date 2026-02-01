@@ -16,6 +16,11 @@ pymupdf = ">=1.24.0"
 torch = ">=2.0.0"
 transformers = ">=4.30.0"
 pytorch-crf = ">=0.7.2"
+sqlalchemy = { extras = ["asyncio"], version = ">=2.0.0" }
+sqlmodel = ">=0.0.14"
+asyncpg = ">=0.29.0"
+alembic = ">=1.13.0"
+psycopg2-binary = ">=2.9.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

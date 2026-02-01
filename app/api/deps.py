@@ -1,6 +1,15 @@
 """
-Shared dependencies for API routes (e.g. get_ner_service when needed).
+Shared dependencies for API routes (e.g. database session).
 """
 
-# Placeholder: add get_ner_service or other deps when you wire NER at startup.
-# For now resume module calls app.ml.resume_ner directly.
+from typing import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import db_session
+
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """Yield a database session; rollback on exception, close on exit."""
+    async for session in db_session():
+        yield session

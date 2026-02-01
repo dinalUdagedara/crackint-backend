@@ -2,12 +2,18 @@
 Resume upload and entity extraction endpoint.
 """
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from typing import Optional
+import uuid as uuid_pkg
 
-from app.common.http_response_model import CommonResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_db
 from app.api.resume.schemas import ResumeExtractResponse
 from app.api.resume import service as resume_service
+from app.common.http_response_model import CommonResponse
 from app.config import settings
+from app.models import Resume
 
 router = APIRouter()
 
@@ -24,6 +30,8 @@ ALLOWED_CONTENT_TYPES = {"application/pdf"}
 async def extract_resume_entities(
     file: UploadFile | None = File(default=None, description="Resume PDF file"),
     text: str | None = Form(default=None, description="Raw resume text (use when not uploading a file)"),
+    user_id: Optional[uuid_pkg.UUID] = Query(default=None, description="Optional user ID to associate this resume with (for testing until auth is added)."),
+    session: AsyncSession = Depends(get_db),
 ):
     """
     Accept either:
@@ -61,6 +69,16 @@ async def extract_resume_entities(
         text_clean = text.strip()
         entities = await resume_service.extract_entities_from_text(text_clean)
         payload = ResumeExtractResponse(entities=entities, raw_text=None)
+
+    # Persist to DB (user_id nullable until auth is added)
+    resume = Resume(
+        user_id=user_id,
+        entities=payload.entities,
+        raw_text=payload.raw_text,
+    )
+    session.add(resume)
+    await session.commit()
+    await session.refresh(resume)
 
     return CommonResponse(
         success=True,
