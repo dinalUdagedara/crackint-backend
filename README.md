@@ -81,8 +81,16 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 ## API
 
+See **[API_OVERVIEW.md](API_OVERVIEW.md)** for a full list of endpoints, parameters, and response shapes.
+
 - **GET /api/v1/health** — Health check (`{"status": "ok"}`).
-- **POST /api/v1/resumes/extract** — Extract entities from a resume.
+- **GET /api/v1/resumes** — List all resumes (paginated; optional `user_id` filter).
+- **GET /api/v1/resumes/{resume_id}** — Get a single resume by ID.
+- **POST /api/v1/resumes/extract** — Create resume: upload PDF or paste text, extract entities, persist.
+- **PUT /api/v1/resumes/{resume_id}** — Update resume: new PDF or text, re-extract, update record.
+- **PATCH /api/v1/resumes/{resume_id}** — Update only selected entity fields (e.g. NAME, SKILL); send JSON `{ "entities": { "NAME": ["..."], "SKILL": [...] } }`.
+- **DELETE /api/v1/resumes** — Delete all resumes.
+- **POST /api/v1/resumes/extract** — Create resume: extract entities from a PDF or text.
   - Either upload a **PDF file** (multipart form field `file`), or
   - Send raw text (form field `text`).
   - Response: `{ "success": true, "message": "...", "payload": { "entities": { "NAME": [...], "EMAIL": [...], "SKILL": [...], ... }, "raw_text": "..." } }`.
