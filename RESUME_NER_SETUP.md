@@ -34,11 +34,23 @@ The backend always loads from a **directory on disk**; “saving the model somew
 
 ### Option 1: Google Drive (simplest — you already have this)
 
-- **Save:** In Colab, save the model to Google Drive (e.g. `My Drive/resume_ner/`).
-- **Use locally:** Download that folder (zip from Drive or Colab script in section 2 below), unzip to e.g. `model/resume_ner/`, set `RESUME_NER_LOAD_DIR=./model/resume_ner` in `.env`.
-- **Share with teammate:** Share the Drive folder or the zip; they download and set `RESUME_NER_LOAD_DIR` the same way.
+#### Upload to Google Drive
 
-No code changes; the “storage” is just Drive, the “loading” is manual copy + env var.
+- **What to upload:** The contents of `model/resume_ner`: `ner_config.json`, `bert_bilstm_crf_state.pt`, `vocab.txt`, `tokenizer_config.json`, `special_tokens_map.json`. The `.pt` file is large (~400 MB+); Drive supports it.
+- **How:** Zip the `model/resume_ner` folder (or the folder containing those five files). Upload the zip to Google Drive as **one file**, or upload the folder as-is (multiple files in one Drive folder).
+- **Sharing:** Set the folder or file sharing to **Anyone with the link** (or Viewer) so the app or script can download without OAuth.
+- **Get the ID from the URL:**
+  - **Folder:** `https://drive.google.com/drive/folders/<FOLDER_ID>` → use `<FOLDER_ID>` for `RESUME_NER_GDRIVE_FOLDER_ID` or the script.
+  - **File (single zip):** `https://drive.google.com/file/d/<FILE_ID>/view` → use `<FILE_ID>` for `RESUME_NER_GDRIVE_FILE_ID` or `python scripts/download_resume_ner_from_gdrive.py --file <FILE_ID>`.
+
+#### Save and use
+
+- **Save:** In Colab, save the model to Google Drive (e.g. `My Drive/resume_ner/`). Upload the folder so it contains the five files above. Set sharing to **Anyone with the link**.
+- **Use (two options):**
+  - **Automatic at startup:** Set `RESUME_NER_GDRIVE_FOLDER_ID=<FOLDER_ID>` or `RESUME_NER_GDRIVE_FILE_ID=<FILE_ID>` in `.env` (leave `RESUME_NER_LOAD_DIR` unset if you want). Install gdown: `poetry install --with download` or `pip install gdown`. On first run the app will download the model to `model/resume_ner` and load it.
+  - **One-time download:** Run `python scripts/download_resume_ner_from_gdrive.py [FOLDER_ID]` or `python scripts/download_resume_ner_from_gdrive.py --file FILE_ID`. Then set `RESUME_NER_LOAD_DIR=./model/resume_ner` in `.env`.
+- **Share with teammate:** Share the Drive folder or file link; they use the same env var or script and set `RESUME_NER_LOAD_DIR` after download.
+
 
 ---
 
