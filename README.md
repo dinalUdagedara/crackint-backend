@@ -73,7 +73,8 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 **Resume NER**  
 - The model is hosted on **Hugging Face**: [dinalUdagedara/resume-entity-extractor](https://huggingface.co/dinalUdagedara/resume-entity-extractor). To download it locally: run `python scripts/download_resume_ner_model.py` (requires `poetry install --with download` or `pip install huggingface_hub`), then set **`RESUME_NER_LOAD_DIR=./model/resume_ner`** in `.env`.
-- Alternatively, set `RESUME_NER_LOAD_DIR` to any directory that already contains the saved model (e.g. from your notebook or Google Drive). See **RESUME_NER_SETUP.md** for details.
+- **Google Drive:** The model can be stored in a shared Drive folder or as a single zip file. Set **`RESUME_NER_GDRIVE_FOLDER_ID`** or **`RESUME_NER_GDRIVE_FILE_ID`** so the app downloads at startup (`poetry install --with download` or `pip install gdown`), or run `python scripts/download_resume_ner_from_gdrive.py` (optionally with a folder ID or `--file FILE_ID`) then set **`RESUME_NER_LOAD_DIR=./model/resume_ner`**. See **RESUME_NER_SETUP.md** for details.
+- Alternatively, set `RESUME_NER_LOAD_DIR` to any directory that already contains the saved model (e.g. from your notebook or a manual Drive download). See **RESUME_NER_SETUP.md** for details.
 - If `RESUME_NER_LOAD_DIR` is not set or the path does not exist, the API still runs and returns stub/minimal rule-based extraction.
 
 **Job poster NER**  

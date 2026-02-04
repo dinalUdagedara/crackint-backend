@@ -62,21 +62,100 @@ class BertBiLSTMCRF(torch.nn.Module):
         return self.crf.decode(emissions, mask=mask_b)
 
 
+def _download_resume_ner_from_gdrive(cache_dir: Path) -> bool:
+    """Download Resume NER model from Google Drive (folder or single zip file) into cache_dir. Returns True on success."""
+    import shutil
+    import zipfile
+
+    folder_id = getattr(settings, "RESUME_NER_GDRIVE_FOLDER_ID", None)
+    file_id = getattr(settings, "RESUME_NER_GDRIVE_FILE_ID", None)
+    folder_id = folder_id.strip() if folder_id and folder_id.strip() else None
+    file_id = file_id.strip() if file_id and file_id.strip() else None
+    if not folder_id and not file_id:
+        return False
+    try:
+        import gdown
+    except ImportError:
+        import logging
+        logging.getLogger(__name__).warning(
+            "RESUME_NER_GDRIVE_FOLDER_ID or RESUME_NER_GDRIVE_FILE_ID is set but gdown is not installed. "
+            "Install with: poetry install --with download  or  pip install gdown"
+        )
+        return False
+    cache_dir = cache_dir.resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    if (cache_dir / "ner_config.json").exists() and (cache_dir / "bert_bilstm_crf_state.pt").exists():
+        return True
+    download_dir = cache_dir.parent / "resume_ner_download"
+    if download_dir.exists():
+        shutil.rmtree(download_dir, ignore_errors=True)
+    download_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if folder_id:
+            gdown.download_folder(id=folder_id, output=str(download_dir), quiet=True, use_cookies=False)
+        else:
+            zip_path = download_dir / "resume_ner.zip"
+            gdown.download(id=file_id, output=str(zip_path), quiet=True, use_cookies=False)
+    except Exception:
+        if download_dir.exists():
+            shutil.rmtree(download_dir, ignore_errors=True)
+        return False
+    for f in download_dir.rglob("*"):
+        if f.is_file():
+            dest = cache_dir / f.name
+            if f.suffix.lower() == ".zip":
+                with zipfile.ZipFile(f, "r") as zf:
+                    for name in zf.namelist():
+                        if name.endswith("/"):
+                            continue
+                        zf.extract(name, cache_dir)
+                        ex = cache_dir / name
+                        if ex.is_file() and ex.parent != cache_dir:
+                            (cache_dir / ex.name).write_bytes(ex.read_bytes())
+                            ex.unlink(missing_ok=True)
+            else:
+                shutil.copy2(f, dest)
+    shutil.rmtree(download_dir, ignore_errors=True)
+    for pt in cache_dir.rglob("bert_bilstm_crf_state.pt"):
+        if pt.parent != cache_dir:
+            shutil.copy2(pt, cache_dir / "bert_bilstm_crf_state.pt")
+            break
+    return (cache_dir / "ner_config.json").exists() and (cache_dir / "bert_bilstm_crf_state.pt").exists()
+
+
 def load_model() -> None:
     """
     Load tokenizer and model from RESUME_NER_LOAD_DIR.
+    If that path is missing, optionally download from Google Drive (RESUME_NER_GDRIVE_FOLDER_ID or RESUME_NER_GDRIVE_FILE_ID).
     Call once at startup or lazily on first request.
     """
     global _tokenizer, _model, _device, _id2label, _num_labels
 
     load_dir = getattr(settings, "RESUME_NER_LOAD_DIR", None)
-    if not load_dir or not Path(load_dir).exists():
-        _tokenizer = _model = _device = _id2label = None
-        _num_labels = 0
-        return
+    load_path = Path(load_dir) if load_dir else None
+    loaded_from_drive = False
+    if not load_path or not load_path.exists():
+        default_cache = Path(__file__).resolve().parent.parent.parent / "model" / "resume_ner"
+        folder_id = getattr(settings, "RESUME_NER_GDRIVE_FOLDER_ID", None)
+        file_id = getattr(settings, "RESUME_NER_GDRIVE_FILE_ID", None)
+        if (folder_id and folder_id.strip()) or (file_id and file_id.strip()):
+            if _download_resume_ner_from_gdrive(default_cache):
+                load_path = default_cache
+                loaded_from_drive = True
+        if not load_path or not load_path.exists():
+            _tokenizer = _model = _device = _id2label = None
+            _num_labels = 0
+            return
+    else:
+        load_path = load_path.resolve()
 
-    config_path = Path(load_dir) / "ner_config.json"
-    state_path = Path(load_dir) / "bert_bilstm_crf_state.pt"
+    if loaded_from_drive:
+        print("Resume NER: loading from cache (downloaded from Google Drive) at", load_path)
+    else:
+        print("Resume NER: loading from local path", load_path)
+
+    config_path = load_path / "ner_config.json"
+    state_path = load_path / "bert_bilstm_crf_state.pt"
     if not config_path.exists() or not state_path.exists():
         _tokenizer = _model = _device = _id2label = None
         _num_labels = 0
@@ -99,7 +178,7 @@ def load_model() -> None:
     else:
         _device = torch.device("cpu")
 
-    _tokenizer = BertTokenizer.from_pretrained(load_dir)
+    _tokenizer = BertTokenizer.from_pretrained(str(load_path))
     _model = BertBiLSTMCRF(bert_name=bert_name, num_labels=num_labels).to(_device)
     _model.load_state_dict(torch.load(state_path, map_location=_device))
     _model.eval()

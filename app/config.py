@@ -31,6 +31,9 @@ class Settings(BaseSettings):
 
     # NER model: directory where saved model, tokenizer, and config are stored
     RESUME_NER_LOAD_DIR: Optional[str] = None
+    # If set and RESUME_NER_LOAD_DIR is missing, download from Google Drive at startup
+    RESUME_NER_GDRIVE_FOLDER_ID: Optional[str] = None  # folder (multiple files)
+    RESUME_NER_GDRIVE_FILE_ID: Optional[str] = None   # single zip file containing the model
     JOB_POSTER_NER_LOAD_DIR: Optional[str] = None
 
     # Upload limits for resume/job PDFs (MB)
