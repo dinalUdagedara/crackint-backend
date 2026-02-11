@@ -49,12 +49,14 @@ No auth. Use for readiness/health checks.
 **POST /api/v1/resumes/extract**  
 No auth.
 
-Extract entities (NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE) from a resume. Send **either** a PDF file **or** raw text, not both.
+Extract entities (NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE) from a resume. Send **either** a file **or** raw text, not both.
 
 **Request:**
 - **Content-Type:** `multipart/form-data`
+- **Query (optional):**
+  - **validate** (boolean, default false): If true and the server has the AI agent enabled (`RESUME_ENTITY_AGENT_ENABLED` + `OPENAI_API_KEY`), entities are validated and corrected by an LLM before being returned.
 - **Body (choose one):**
-  - **file** (optional): PDF file (field name `file`)
+  - **file** (optional): PDF or image (PNG, JPEG, WebP) — field name `file`
   - **text** (optional): string, raw resume text (field name `text`)
 
 **Success response (200):**
@@ -85,7 +87,7 @@ Example:
 
 **Error responses:**
 - **400** — Send either `file` or `text`, not both; or both missing.
-- **400** — Only PDF allowed (`content-type: application/pdf`).
+- **400** — Only PDF and images (PNG, JPEG, WebP) allowed.
 - **400** — File too large (max default 10 MB).
 
 **Frontend example (fetch):**
@@ -105,7 +107,16 @@ const res = await fetch(`${baseUrl}/api/v1/resumes/extract`, {
   method: "POST",
   body: formData,
 });
+
+// Option C: Extract with AI validation/correction (add ?validate=true)
+const resWithValidation = await fetch(`${baseUrl}/api/v1/resumes/extract?validate=true`, {
+  method: "POST",
+  body: formData,
+});
 ```
+
+**POST /api/v1/resumes/preview-extract**  
+Same as extract but does not save to the database. Returns `extracted_text` and `entities`. Supports the same **validate** query parameter for optional AI correction.
 
 ---
 
@@ -114,18 +125,18 @@ const res = await fetch(`${baseUrl}/api/v1/resumes/extract`, {
 **POST /api/v1/jobs/extract**  
 No auth.
 
-Extract entities from a job description (PDF or text). With job-poster NER: e.g. JOB_TITLE, COMPANY, SKILLS_REQUIRED, SALARY. Fallback uses resume-style entities: SKILL, OCCUPATION, EDUCATION, EXPERIENCE.
+Extract entities from a job description (file or text). When job-poster NER is loaded: e.g. JOB_TITLE, COMPANY, SKILLS_REQUIRED, SALARY. When the model is not loaded, returns empty entities.
 
 **Request:**
 - **Content-Type:** `multipart/form-data`
 - **Body (choose one):**
-  - **file** (optional): PDF file (field name `file`)
+  - **file** (optional): PDF or image (PNG, JPEG, WebP) — field name `file`
   - **text** (optional): string, raw job description (field name `text`)
 
 **Success response (200):**
 ```ts
 CommonResponse<{
-  entities: Record<string, string[]>;  // keys depend on NER (job poster vs resume fallback)
+  entities: Record<string, string[]>;  // job poster keys when model loaded; empty otherwise
   raw_text: string | null;
 }>
 ```
@@ -150,7 +161,8 @@ const res = await fetch(`${baseUrl}/api/v1/jobs/extract`, {
 |--------|------|--------|
 | GET | `/` | Root info |
 | GET | `/api/v1/health` | Health check |
-| POST | `/api/v1/resumes/extract` | Extract resume entities (file or text) |
+| POST | `/api/v1/resumes/extract` | Extract resume entities (file or text; optional `?validate=true` for AI correction) |
+| POST | `/api/v1/resumes/preview-extract` | Same as extract, no DB save; optional `?validate=true` |
 | POST | `/api/v1/jobs/extract` | Extract job description entities (file or text) |
 
 **Docs (Swagger):** `GET /api/v1/docs`  

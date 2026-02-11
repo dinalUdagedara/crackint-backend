@@ -76,6 +76,7 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 - **Google Drive:** The model can be stored in a shared Drive folder or as a single zip file. Set **`RESUME_NER_GDRIVE_FOLDER_ID`** or **`RESUME_NER_GDRIVE_FILE_ID`** so the app downloads at startup (`poetry install --with download` or `pip install gdown`), or run `python scripts/download_resume_ner_from_gdrive.py` (optionally with a folder ID or `--file FILE_ID`) then set **`RESUME_NER_LOAD_DIR=./model/resume_ner`**. See **RESUME_NER_SETUP.md** for details.
 - Alternatively, set `RESUME_NER_LOAD_DIR` to any directory that already contains the saved model (e.g. from your notebook or a manual Drive download). See **RESUME_NER_SETUP.md** for details.
 - If `RESUME_NER_LOAD_DIR` is not set or the path does not exist, the API still runs and returns stub/minimal rule-based extraction.
+- For a detailed description of the extraction pipeline (hybrid rules, model formats, tokenization), see **[docs/RESUME_EXTRACTION.md](docs/RESUME_EXTRACTION.md)**.
 
 **Job poster NER**  
 - Set **`JOB_POSTER_NER_LOAD_DIR`** to the directory containing your job poster NER model (e.g. `./model/job_poster_ner`). The folder must contain `bert_bilstm_crf_state.pt`, `ner_config.json`, and the tokenizer files (`vocab.txt`, etc.). If not set or the path does not exist, job description extraction falls back to the resume NER pipeline.

@@ -67,3 +67,16 @@ class ResumeExtractResponse(BaseModel):
         default=None,
         description="Raw text used for extraction (if client sent file). Omitted if client sent text.",
     )
+
+
+class ResumeExtractPreviewResponse(BaseModel):
+    """Payload for preview endpoint: text passed to the model and resulting entities (no DB write)."""
+
+    extracted_text: str = Field(
+        ...,
+        description="Exact text passed to the NER model (from PDF extraction or raw input). Use to monitor/debug input.",
+    )
+    entities: Dict[str, List[str]] = Field(
+        ...,
+        description="Entities extracted by the model from extracted_text.",
+    )
