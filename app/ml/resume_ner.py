@@ -1,5 +1,5 @@
 """
-Resume NER: load BERT-BiLSTM-CRF from RESUME_NER_LOAD_DIR and run hybrid extraction.
+Resume NER: load BERT-BiLSTM-CRF or Word2Vec-BiLSTM-CRF from RESUME_NER_LOAD_DIR and run hybrid extraction.
 """
 
 import json
@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
+import torch.nn as nn
 from transformers import BertModel, BertTokenizer
 
 from app.config import settings
@@ -19,6 +20,10 @@ _model: Any = None
 _device: Any = None
 _id2label: Optional[Dict[int, str]] = None
 _num_labels: int = 0
+# Word2Vec-based model: word2id for tokenization, and whether we use Word2Vec path in _parse_resume
+_word2id: Optional[Dict[str, int]] = None
+_use_word2vec_model: bool = False
+_w2v_max_len: int = 256
 
 
 class BertBiLSTMCRF(torch.nn.Module):
@@ -62,6 +67,52 @@ class BertBiLSTMCRF(torch.nn.Module):
         return self.crf.decode(emissions, mask=mask_b)
 
 
+class Word2VecBiLSTMCRF(torch.nn.Module):
+    """Word2Vec embeddings + BiLSTM + CRF for NER. Used when config has word2id and embed_dim."""
+
+    def __init__(
+        self,
+        vocab_size: int,
+        embed_dim: int,
+        hidden_dim: int,
+        num_labels: int,
+        dropout: float = 0.3,
+        embedding_weights: Optional[torch.Tensor] = None,
+    ):
+        super().__init__()
+        from torchcrf import CRF
+
+        self.embed = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        if embedding_weights is not None:
+            self.embed.weight.data.copy_(embedding_weights)
+            self.embed.weight.data[0].zero_()
+        self.lstm = nn.LSTM(
+            embed_dim,
+            hidden_dim // 2,
+            num_layers=1,
+            bidirectional=True,
+            batch_first=True,
+        )
+        self.drop = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_dim, num_labels)
+        self.crf = CRF(num_labels, batch_first=True)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
+    ):
+        out = self.embed(input_ids)
+        out, _ = self.lstm(self.drop(out))
+        emissions = self.fc(self.drop(out))
+        mask_b = attention_mask.bool()
+        if labels is not None:
+            labels = labels.clone().masked_fill(labels == -100, 0)
+            return -self.crf(emissions, labels, mask=mask_b, reduction="mean")
+        return self.crf.decode(emissions, mask=mask_b)
+
+
 def _download_resume_ner_from_gdrive(cache_dir: Path) -> bool:
     """Download Resume NER model from Google Drive (folder or single zip file) into cache_dir. Returns True on success."""
     import shutil
@@ -84,7 +135,9 @@ def _download_resume_ner_from_gdrive(cache_dir: Path) -> bool:
         return False
     cache_dir = cache_dir.resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    if (cache_dir / "ner_config.json").exists() and (cache_dir / "bert_bilstm_crf_state.pt").exists():
+    if (cache_dir / "ner_config.json").exists() and (
+        (cache_dir / "bert_bilstm_crf_state.pt").exists() or (cache_dir / "bilstm_crf_state.pt").exists()
+    ):
         return True
     download_dir = cache_dir.parent / "resume_ner_download"
     if download_dir.exists():
@@ -116,11 +169,14 @@ def _download_resume_ner_from_gdrive(cache_dir: Path) -> bool:
             else:
                 shutil.copy2(f, dest)
     shutil.rmtree(download_dir, ignore_errors=True)
-    for pt in cache_dir.rglob("bert_bilstm_crf_state.pt"):
-        if pt.parent != cache_dir:
-            shutil.copy2(pt, cache_dir / "bert_bilstm_crf_state.pt")
+    for name in ("bert_bilstm_crf_state.pt", "bilstm_crf_state.pt"):
+        for pt in cache_dir.rglob(name):
+            if pt.parent != cache_dir:
+                shutil.copy2(pt, cache_dir / name)
             break
-    return (cache_dir / "ner_config.json").exists() and (cache_dir / "bert_bilstm_crf_state.pt").exists()
+    return (cache_dir / "ner_config.json").exists() and (
+        (cache_dir / "bert_bilstm_crf_state.pt").exists() or (cache_dir / "bilstm_crf_state.pt").exists()
+    )
 
 
 def load_model() -> None:
@@ -129,7 +185,7 @@ def load_model() -> None:
     If that path is missing, optionally download from Google Drive (RESUME_NER_GDRIVE_FOLDER_ID or RESUME_NER_GDRIVE_FILE_ID).
     Call once at startup or lazily on first request.
     """
-    global _tokenizer, _model, _device, _id2label, _num_labels
+    global _tokenizer, _model, _device, _id2label, _num_labels, _word2id, _use_word2vec_model
 
     load_dir = getattr(settings, "RESUME_NER_LOAD_DIR", None)
     load_path = Path(load_dir) if load_dir else None
@@ -155,19 +211,20 @@ def load_model() -> None:
         print("Resume NER: loading from local path", load_path)
 
     config_path = load_path / "ner_config.json"
-    state_path = load_path / "bert_bilstm_crf_state.pt"
-    if not config_path.exists() or not state_path.exists():
-        _tokenizer = _model = _device = _id2label = None
+    state_path_bert = load_path / "bert_bilstm_crf_state.pt"
+    state_path_w2v = load_path / "bilstm_crf_state.pt"
+    state_path = state_path_bert if state_path_bert.exists() else (state_path_w2v if state_path_w2v.exists() else None)
+    if not config_path.exists() or state_path is None:
+        _tokenizer = _model = _device = _id2label = _word2id = None
         _num_labels = 0
+        _use_word2vec_model = False
         return
 
     with open(config_path, "r", encoding="utf-8") as f:
         load_config = json.load(f)
 
     tags: List[str] = load_config["tags"]
-    bert_name: str = load_config.get("bert_name", "bert-base-uncased")
     num_labels: int = load_config["num_labels"]
-
     _id2label = {i: t for i, t in enumerate(tags)}
     _num_labels = num_labels
 
@@ -178,10 +235,43 @@ def load_model() -> None:
     else:
         _device = torch.device("cpu")
 
-    _tokenizer = BertTokenizer.from_pretrained(str(load_path))
-    _model = BertBiLSTMCRF(bert_name=bert_name, num_labels=num_labels).to(_device)
-    _model.load_state_dict(torch.load(state_path, map_location=_device))
-    _model.eval()
+    # Word2Vec + BiLSTM + CRF (config has word2id, embed_dim; state file is bilstm_crf_state.pt)
+    use_word2vec = (
+        "word2id" in load_config
+        and "embed_dim" in load_config
+        and state_path == state_path_w2v
+    )
+    if use_word2vec:
+        word2id = load_config["word2id"]
+        embed_dim = int(load_config["embed_dim"])
+        max_len = int(load_config.get("max_len", 256))
+        state_dict = torch.load(state_path, map_location=_device)
+        # Use checkpoint's embed and dimensions so we match Colab/notebook exactly
+        vocab_size = int(state_dict["embed.weight"].shape[0])
+        hidden_dim = int(state_dict["fc.weight"].shape[1])
+        _model = Word2VecBiLSTMCRF(
+            vocab_size=vocab_size,
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_labels=num_labels,
+            embedding_weights=None,
+        ).to(_device)
+        _model.load_state_dict(state_dict, strict=True)
+        _model.eval()
+        _word2id = word2id
+        _tokenizer = None
+        _use_word2vec_model = True
+        globals()["_w2v_max_len"] = max_len
+        print("Resume NER: loaded Word2Vec+BiLSTM+CRF model (embed_dim=%s, hidden_dim=%s, vocab=%s)" % (embed_dim, hidden_dim, vocab_size))
+    else:
+        # BERT + BiLSTM + CRF
+        bert_name: str = load_config.get("bert_name", "bert-base-uncased")
+        _tokenizer = BertTokenizer.from_pretrained(str(load_path))
+        _model = BertBiLSTMCRF(bert_name=bert_name, num_labels=num_labels).to(_device)
+        _model.load_state_dict(torch.load(state_path, map_location=_device))
+        _model.eval()
+        _word2id = None
+        _use_word2vec_model = False
 
 
 def _parse_resume(
@@ -189,32 +279,53 @@ def _parse_resume(
     max_len: int = 512,
 ) -> Tuple[List[str], List[str], Dict[str, List[str]]]:
     """Tokenize text, run NER, return (words, pred_tags, entities). Handles B- and leading I- spans."""
-    if _tokenizer is None or _model is None or _id2label is None:
+    if _model is None or _id2label is None:
+        return [], [], _empty_entities()
+    if not _use_word2vec_model and _tokenizer is None:
         return [], [], _empty_entities()
 
     words = re.findall(r"\S+", text)
     if not words:
         return [], [], _empty_entities()
 
-    first_idx: List[int] = []
-    toks: List[str] = ["[CLS]"]
-    for w in words:
-        sub = _tokenizer.tokenize(w) or [_tokenizer.unk_token]
-        first_idx.append(len(toks))
-        toks.extend(sub)
-    toks.append("[SEP]")
-    ids = _tokenizer.convert_tokens_to_ids(toks)
-    if len(ids) > max_len:
-        ids = ids[: max_len - 1] + [_tokenizer.sep_token_id]
-        first_idx = [i for i in first_idx if i < len(ids)]
-        words = words[: len(first_idx)]
-    mask = [1] * len(ids)
-    inp = torch.tensor([ids], dtype=torch.long).to(_device)
-    mask_t = torch.tensor([mask], dtype=torch.long).to(_device)
-    _model.eval()
-    with torch.no_grad():
-        preds = _model(inp, mask_t)
-    pred_tags = [_id2label.get(preds[0][i], "O") for i in first_idx]
+    print("Resume NER: running model inference (%d words)" % len(words))
+
+    if _use_word2vec_model and _word2id is not None:
+        unk_id = _word2id.get("<UNK>", 1)
+        w2v_max = _w2v_max_len
+        # Match notebook: exact word lookup only (no lowercase fallback) so token IDs match training/Colab
+        ids = [_word2id.get(w, unk_id) for w in words]
+        if len(ids) > w2v_max:
+            ids = ids[:w2v_max]
+            words = words[:w2v_max]
+        first_idx = list(range(len(words)))
+        mask = [1] * len(ids)
+        inp = torch.tensor([ids], dtype=torch.long).to(_device)
+        mask_t = torch.tensor([mask], dtype=torch.long).to(_device)
+        _model.eval()
+        with torch.no_grad():
+            preds = _model(inp, mask_t)
+        pred_tags = [_id2label.get(preds[0][i], "O") for i in first_idx]
+    else:
+        first_idx = []
+        toks = ["[CLS]"]
+        for w in words:
+            sub = _tokenizer.tokenize(w) or [_tokenizer.unk_token]
+            first_idx.append(len(toks))
+            toks.extend(sub)
+        toks.append("[SEP]")
+        ids = _tokenizer.convert_tokens_to_ids(toks)
+        if len(ids) > max_len:
+            ids = ids[: max_len - 1] + [_tokenizer.sep_token_id]
+            first_idx = [i for i in first_idx if i < len(ids)]
+            words = words[: len(first_idx)]
+        mask = [1] * len(ids)
+        inp = torch.tensor([ids], dtype=torch.long).to(_device)
+        mask_t = torch.tensor([mask], dtype=torch.long).to(_device)
+        _model.eval()
+        with torch.no_grad():
+            preds = _model(inp, mask_t)
+        pred_tags = [_id2label.get(preds[0][i], "O") for i in first_idx]
 
     # Build entity dict: handle B-X and leading I-X (when model misses B-)
     entities: Dict[str, List[str]] = {}
@@ -341,4 +452,4 @@ def _stub_entities(text: str) -> Dict[str, List[str]]:
 
 
 def is_model_loaded() -> bool:
-    return _model is not None and _tokenizer is not None
+    return _model is not None and (_tokenizer is not None or _use_word2vec_model)

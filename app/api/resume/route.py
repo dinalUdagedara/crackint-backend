@@ -10,7 +10,13 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
-from app.api.resume.schemas import DeleteAllResumesResponse, ResumeEntitiesUpdate, ResumeExtractResponse, ResumeListItem
+from app.api.resume.schemas import (
+    DeleteAllResumesResponse,
+    ResumeEntitiesUpdate,
+    ResumeExtractPreviewResponse,
+    ResumeExtractResponse,
+    ResumeListItem,
+)
 from app.api.resume import service as resume_service
 from app.common.http_response_model import CommonResponse, PageMeta
 from app.config import settings
@@ -87,6 +93,57 @@ async def get_resume(
 
 
 @router.post(
+    "/preview-extract",
+    response_model=CommonResponse[ResumeExtractPreviewResponse],
+    name="Preview extracted text and entities",
+    summary="Return the text passed to the NER model and extracted entities (no DB save). Use to monitor PDF extraction and model input.",
+)
+async def preview_resume_extract(
+    file: UploadFile | None = File(default=None, description="Resume PDF file"),
+    text: str | None = Form(default=None, description="Raw resume text (use when not uploading a file)"),
+):
+    """
+    Accept either **file** (PDF) or **text**. Returns:
+    - **extracted_text**: The exact string passed to the NER model (from PDF or your text).
+    - **entities**: Entities extracted by the model.
+
+    Does **not** save to the database. Use this to debug or monitor what the model receives.
+    """
+    if file is not None and text is not None:
+        raise HTTPException(status_code=400, detail="Send either a file or text, not both.")
+    if file is None and (text is None or not text.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="Send either a file (PDF) or form field 'text' with resume content.",
+        )
+
+    if file is not None:
+        if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Only PDF files are accepted. Use content-type application/pdf.",
+            )
+        content = await file.read()
+        if len(content) > MAX_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
+            )
+        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content)
+        payload = ResumeExtractPreviewResponse(extracted_text=raw_text, entities=entities)
+    else:
+        text_clean = text.strip()
+        entities = await resume_service.extract_entities_from_text(text_clean)
+        payload = ResumeExtractPreviewResponse(extracted_text=text_clean, entities=entities)
+
+    return CommonResponse(
+        success=True,
+        message="Preview: text passed to model and extracted entities",
+        payload=payload,
+    )
+
+
+@router.post(
     "/extract",
     response_model=CommonResponse[ResumeExtractResponse],
     name="Extract entities from resume",
@@ -133,7 +190,7 @@ async def extract_resume_entities(
     else:
         text_clean = text.strip()
         entities = await resume_service.extract_entities_from_text(text_clean)
-        payload = ResumeExtractResponse(entities=entities, raw_text=None)
+        payload = ResumeExtractResponse(entities=entities, raw_text=text_clean)
 
     # Persist to DB (user_id nullable until auth is added)
     resume = Resume(
@@ -202,7 +259,7 @@ async def update_resume(
         text_clean = text.strip()
         entities = await resume_service.extract_entities_from_text(text_clean)
         resume.entities = entities
-        resume.raw_text = None
+        resume.raw_text = text_clean
 
     await session.commit()
     await session.refresh(resume)
