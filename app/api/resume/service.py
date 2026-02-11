@@ -10,7 +10,7 @@ from fastapi import HTTPException
 
 from app.ml.resume_ner import parse_resume_hybrid
 from app.agents.resume_entity_agent import validate_and_correct_entities
-from app.services.text_extraction import extract_text_from_pdf
+from app.services.text_extraction import extract_text_from_file
 
 logger = logging.getLogger(__name__)
 
@@ -46,28 +46,29 @@ async def extract_entities_from_text(
     return entities
 
 
-async def extract_entities_from_pdf_bytes(
+async def extract_entities_from_file_bytes(
     content: bytes,
+    content_type: str,
     run_agent: bool = False,
 ) -> tuple[str, Dict[str, List[str]]]:
     """
-    Extract text from PDF bytes, then run NER. If run_agent is True and the agent is configured,
+    Extract text from file bytes (PDF or image via OCR), then run NER. If run_agent is True and the agent is configured,
     validate and correct entities via the LLM. Returns (raw_text, entities).
     """
-    logger.info("Resume extract: PDF input (bytes=%d), run_agent=%s", len(content), run_agent)
+    logger.info("Resume extract: file input (bytes=%d, content_type=%s), run_agent=%s", len(content), content_type, run_agent)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
     try:
-        raw_text = extract_text_from_pdf(content)
+        raw_text = extract_text_from_file(content, content_type)
     except ValueError as e:
-        logger.warning("Resume extract: PDF text extraction failed: %s", e)
+        logger.warning("Resume extract: text extraction failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     if not raw_text.strip():
-        logger.warning("Resume extract: PDF produced empty text")
-        raise HTTPException(status_code=400, detail="No text could be extracted from the PDF")
+        logger.warning("Resume extract: file produced empty text")
+        raise HTTPException(status_code=400, detail="No text could be extracted from the file")
 
-    logger.info("Resume extract: PDF text extracted (len=%d), running NER + agent=%s", len(raw_text), run_agent)
+    logger.info("Resume extract: text extracted (len=%d), running NER + agent=%s", len(raw_text), run_agent)
     entities = await extract_entities_from_text(raw_text, run_agent=run_agent)
     return raw_text, entities

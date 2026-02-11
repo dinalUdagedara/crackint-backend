@@ -12,7 +12,7 @@ class JobExtractResponse(BaseModel):
 
     entities: Dict[str, List[str]] = Field(
         ...,
-        description="Only entity types with at least one value are included. Job poster NER: typically SKILLS_REQUIRED and SALARY (rule-based). Resume NER fallback: SKILL, OCCUPATION, EDUCATION, EXPERIENCE.",
+        description="Only entity types with at least one value are included (e.g. JOB_TITLE, COMPANY, SKILLS_REQUIRED, SALARY). Empty when job poster NER is not loaded.",
     )
     raw_text: str | None = Field(
         default=None,

@@ -6,7 +6,7 @@ This document describes how the Crackint backend extracts entities (NAME, EMAIL,
 
 ## 1. Overview
 
-- **Input:** Raw resume text (e.g. from PDF extraction) or pasted text.
+- **Input:** Raw resume text (e.g. from PDF or image extraction) or pasted text.
 - **Output:** A structured dict with six entity types, each a list of strings (e.g. `{"NAME": ["John Doe"], "SKILL": ["Python", "SQL"], ...}`).
 - **Approach:** Hybrid — rule-based extraction for NAME and EMAIL; neural NER (BiLSTM-CRF) for SKILL, OCCUPATION, EDUCATION, and EXPERIENCE. The backend supports two model architectures; format is detected automatically from the model directory and config.
 
@@ -47,9 +47,10 @@ See **RESUME_NER_SETUP.md** for how to obtain the model (Google Drive, Hugging F
 
 ## 4. Input pipeline
 
-- **PDF:** Bytes are passed to `extract_text_from_pdf` (e.g. PyMuPDF). The returned string is the only input to NER; no layout or structure is used.
+- **PDF:** Bytes are passed to `extract_text_from_file` (which uses PyMuPDF). The returned string is the only input to NER; no layout or structure is used.
+- **Image (PNG, JPEG, WebP):** Bytes are passed to `extract_text_from_file` (which uses the common OCR service and Tesseract). The OCR output is then passed to the same NER path as PDF or pasted text. See **docs/FILE_UPLOAD_AND_IMAGES.md** for setup (Tesseract must be installed on the server).
 - **Pasted text:** The client sends the raw string (e.g. via form field `text`); it is stripped and passed to the same NER path.
-- **No extra normalization:** Aside from stripping and tokenization (per model type), the backend does not lowercasing or sentence segmentation. The exact string (after PDF extraction or paste) is what the model sees.
+- **No extra normalization:** Aside from stripping and tokenization (per model type), the backend does not lowercasing or sentence segmentation. The exact string (after file extraction or paste) is what the model sees.
 
 ---
 
@@ -117,7 +118,7 @@ Lists may be empty. NAME and EMAIL are from rules; the rest are from the NER mod
 ## 8. API endpoints
 
 - **POST /api/v1/resumes/extract**  
-  Accepts either a PDF file (multipart `file`) or pasted text (form field `text`). Optional query: **validate** (boolean, default false). If `validate=true` and the AI agent is configured (see §9), entities are validated and corrected by the LLM before being returned and persisted. Runs the full pipeline (PDF → text if needed, then hybrid extraction, then optionally agent), persists a resume record, and returns `entities` and `raw_text` (the exact string passed to the model).
+  Accepts either a file (PDF or image: PNG, JPEG, WebP) (multipart `file`) or pasted text (form field `text`). Optional query: **validate** (boolean, default false). If `validate=true` and the AI agent is configured (see §9), entities are validated and corrected by the LLM before being returned and persisted. Runs the full pipeline (PDF → text if needed, then hybrid extraction, then optionally agent), persists a resume record, and returns `entities` and `raw_text` (the exact string passed to the model).
 
 - **POST /api/v1/resumes/preview-extract**  
   Same input (file or text). Optional query: **validate** (boolean, default false). If `validate=true` and the AI agent is configured, entities are validated and corrected before being returned. Returns `extracted_text` and `entities` **without** saving to the database. Use this to inspect the text the model receives and the extracted entities.
@@ -159,5 +160,6 @@ The `word2vec.model` file is **not** used at inference time; the checkpoint’s 
 - **RESUME_NER_SETUP.md** — Where to store the model (Drive, Hugging Face, S3), how to download, and env setup.
 - **app/ml/resume_ner.py** — Implementation: model classes, `load_model`, `_parse_resume`, `parse_resume_hybrid`, rules and normalization.
 - **app/api/resume/route.py** — Extract, preview-extract, and update endpoints; PDF vs text handling; `validate` query parameter.
-- **app/api/resume/service.py** — Orchestration: PDF text extraction, `parse_resume_hybrid`, and optional `validate_and_correct_entities`.
+- **app/api/resume/service.py** — Orchestration: file text extraction (PDF or image via `extract_text_from_file`), `parse_resume_hybrid`, and optional `validate_and_correct_entities`.
+- **app/services/text_extraction.py** — `extract_text_from_file` (PDF + image dispatch). **app/services/ocr.py** — common OCR (Tesseract) for images.
 - **app/agents/resume_entity_agent.py** — Optional AI agent: `validate_and_correct_entities(raw_text, entities)`; LLM prompt and JSON parsing with fallback to NER output.

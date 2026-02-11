@@ -8,18 +8,19 @@ from app.common.http_response_model import CommonResponse
 from app.api.job.schemas import JobExtractResponse
 from app.api.job import service as job_service
 from app.config import settings
+from app.services.text_extraction import SUPPORTED_FILE_CONTENT_TYPES
 
 router = APIRouter()
 
 MAX_BYTES = (settings.MAX_UPLOAD_SIZE_MB or 10) * 1024 * 1024
-ALLOWED_CONTENT_TYPES = {"application/pdf"}
+ALLOWED_CONTENT_TYPES = SUPPORTED_FILE_CONTENT_TYPES
 
 
 @router.post(
     "/extract",
     response_model=CommonResponse[JobExtractResponse],
     name="Extract entities from job description",
-    summary="Extract entities from job description PDF or raw text (job poster NER or resume NER fallback).",
+    summary="Extract entities from job description PDF or raw text (job poster NER; empty when model not loaded).",
 )
 async def extract_job_entities(
     file: UploadFile | None = File(default=None, description="Job description PDF file"),
@@ -27,12 +28,12 @@ async def extract_job_entities(
 ):
     """
     Accept either:
-    - **file**: PDF upload (multipart/form-data), or
+    - **file**: PDF or image (PNG, JPEG, WebP) upload (multipart/form-data), or
     - **text**: Form field with raw job description text.
 
-    Returns extracted entities. When job poster NER is loaded: JOB_TITLE, COMPANY, LOCATION,
+    Returns extracted entities when job poster NER is loaded: JOB_TITLE, COMPANY, LOCATION,
     SALARY, SKILLS_REQUIRED, EXPERIENCE_REQUIRED, EDUCATION_REQUIRED, JOB_TYPE.
-    Otherwise (fallback): SKILL, OCCUPATION, EDUCATION, EXPERIENCE.
+    When the model is not loaded, returns empty entities.
     """
     if file is not None and text is not None:
         raise HTTPException(
@@ -42,14 +43,14 @@ async def extract_job_entities(
     if file is None and (text is None or not text.strip()):
         raise HTTPException(
             status_code=400,
-            detail="Send either a file (PDF) or form field 'text' with job description content.",
+            detail="Send either a file (PDF or image) or form field 'text' with job description content.",
         )
 
     if file is not None:
         if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF files are accepted. Use content-type application/pdf.",
+                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -57,7 +58,8 @@ async def extract_job_entities(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await job_service.extract_entities_from_pdf_bytes(content)
+        content_type = file.content_type or "application/octet-stream"
+        raw_text, entities = await job_service.extract_entities_from_file_bytes(content, content_type)
         payload = JobExtractResponse(entities=entities, raw_text=raw_text)
     else:
         text_clean = text.strip()

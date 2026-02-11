@@ -1,6 +1,6 @@
 """
 Orchestrate text extraction (PDF) and NER for job description entity extraction.
-Uses job poster NER when JOB_POSTER_NER_LOAD_DIR is set; otherwise falls back to resume NER.
+Uses job poster NER when JOB_POSTER_NER_LOAD_DIR is set; otherwise returns empty entities.
 """
 
 import asyncio
@@ -10,15 +10,14 @@ from fastapi import HTTPException
 
 from app.ml.job_poster_ner import is_model_loaded as job_poster_model_loaded
 from app.ml.job_poster_ner import parse_job_poster_hybrid
-from app.ml.resume_ner import parse_resume_hybrid
-from app.services.text_extraction import extract_text_from_pdf
+from app.services.text_extraction import extract_text_from_file
 
 
 def _run_ner_sync(text: str) -> Dict[str, List[str]]:
-    """Run NER in thread pool. Prefer job poster NER when loaded, else resume NER."""
+    """Run job poster NER in thread pool when loaded; otherwise return empty dict."""
     if job_poster_model_loaded():
         return parse_job_poster_hybrid(text)
-    return parse_resume_hybrid(text)
+    return {}
 
 
 async def extract_entities_from_text(text: str) -> Dict[str, List[str]]:
@@ -29,22 +28,25 @@ async def extract_entities_from_text(text: str) -> Dict[str, List[str]]:
     return await loop.run_in_executor(None, _run_ner_sync, text)
 
 
-async def extract_entities_from_pdf_bytes(content: bytes) -> tuple[str, Dict[str, List[str]]]:
+async def extract_entities_from_file_bytes(
+    content: bytes,
+    content_type: str,
+) -> tuple[str, Dict[str, List[str]]]:
     """
-    Extract text from job description PDF bytes, then run NER. Returns (raw_text, entities).
+    Extract text from job description file bytes (PDF or image via OCR), then run NER. Returns (raw_text, entities).
     """
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
     try:
-        raw_text = extract_text_from_pdf(content)
+        raw_text = extract_text_from_file(content, content_type)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     if not raw_text.strip():
         raise HTTPException(
             status_code=400,
-            detail="No text could be extracted from the PDF",
+            detail="No text could be extracted from the file",
         )
 
     entities = await extract_entities_from_text(raw_text)

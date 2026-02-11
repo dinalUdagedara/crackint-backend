@@ -24,11 +24,12 @@ from app.api.resume import service as resume_service
 from app.common.http_response_model import CommonResponse, PageMeta
 from app.config import settings
 from app.models import Resume
+from app.services.text_extraction import SUPPORTED_FILE_CONTENT_TYPES
 
 router = APIRouter()
 
 MAX_BYTES = (settings.MAX_UPLOAD_SIZE_MB or 10) * 1024 * 1024
-ALLOWED_CONTENT_TYPES = {"application/pdf"}
+ALLOWED_CONTENT_TYPES = SUPPORTED_FILE_CONTENT_TYPES
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
@@ -126,14 +127,14 @@ async def preview_resume_extract(
         logger.warning("Resume preview-extract: 400 - neither file nor text provided")
         raise HTTPException(
             status_code=400,
-            detail="Send either a file (PDF) or form field 'text' with resume content.",
+            detail="Send either a file (PDF or image) or form field 'text' with resume content.",
         )
 
     if file is not None:
         if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF files are accepted. Use content-type application/pdf.",
+                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -141,9 +142,10 @@ async def preview_resume_extract(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content, run_agent=validate)
+        content_type = file.content_type or "application/octet-stream"
+        raw_text, entities = await resume_service.extract_entities_from_file_bytes(content, content_type, run_agent=validate)
         payload = ResumeExtractPreviewResponse(extracted_text=raw_text, entities=entities)
-        logger.info("Resume preview-extract: done (PDF, text_len=%d)", len(raw_text))
+        logger.info("Resume preview-extract: done (file, text_len=%d)", len(raw_text))
     else:
         text_clean = text.strip()
         entities = await resume_service.extract_entities_from_text(text_clean, run_agent=validate)
@@ -193,7 +195,7 @@ async def extract_resume_entities(
         logger.warning("Resume extract: 400 - neither file nor text provided")
         raise HTTPException(
             status_code=400,
-            detail="Send either a file (PDF) or form field 'text' with resume content.",
+            detail="Send either a file (PDF or image) or form field 'text' with resume content.",
         )
 
     if file is not None:
@@ -201,7 +203,7 @@ async def extract_resume_entities(
             logger.warning("Resume extract: 400 - invalid content type %s", file.content_type)
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF files are accepted. Use content-type application/pdf.",
+                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -210,7 +212,8 @@ async def extract_resume_entities(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content, run_agent=validate)
+        content_type = file.content_type or "application/octet-stream"
+        raw_text, entities = await resume_service.extract_entities_from_file_bytes(content, content_type, run_agent=validate)
         payload = ResumeExtractResponse(entities=entities, raw_text=raw_text)
     else:
         text_clean = text.strip()
@@ -282,7 +285,7 @@ async def update_resume(
         if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF files are accepted. Use content-type application/pdf.",
+                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -290,7 +293,8 @@ async def update_resume(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content, run_agent=validate)
+        content_type = file.content_type or "application/octet-stream"
+        raw_text, entities = await resume_service.extract_entities_from_file_bytes(content, content_type, run_agent=validate)
         resume.entities = entities
         resume.raw_text = raw_text
     else:
