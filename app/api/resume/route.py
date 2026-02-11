@@ -2,10 +2,13 @@
 Resume upload, entity extraction, and update endpoints.
 """
 
+import logging
 from typing import Optional
 import uuid as uuid_pkg
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile
+
+logger = logging.getLogger(__name__)
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -101,6 +104,7 @@ async def get_resume(
 async def preview_resume_extract(
     file: UploadFile | None = File(default=None, description="Resume PDF file"),
     text: str | None = Form(default=None, description="Raw resume text (use when not uploading a file)"),
+    validate: bool = Query(default=False, description="If true, run AI agent to validate and correct entities (requires RESUME_ENTITY_AGENT_ENABLED and OPENAI_API_KEY)."),
 ):
     """
     Accept either **file** (PDF) or **text**. Returns:
@@ -109,9 +113,17 @@ async def preview_resume_extract(
 
     Does **not** save to the database. Use this to debug or monitor what the model receives.
     """
+    logger.info(
+        "Resume preview-extract: validate=%s, has_file=%s, has_text=%s",
+        validate,
+        file is not None,
+        text is not None and bool(text and text.strip()),
+    )
     if file is not None and text is not None:
+        logger.warning("Resume preview-extract: 400 - client sent both file and text")
         raise HTTPException(status_code=400, detail="Send either a file or text, not both.")
     if file is None and (text is None or not text.strip()):
+        logger.warning("Resume preview-extract: 400 - neither file nor text provided")
         raise HTTPException(
             status_code=400,
             detail="Send either a file (PDF) or form field 'text' with resume content.",
@@ -129,12 +141,14 @@ async def preview_resume_extract(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content)
+        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content, run_agent=validate)
         payload = ResumeExtractPreviewResponse(extracted_text=raw_text, entities=entities)
+        logger.info("Resume preview-extract: done (PDF, text_len=%d)", len(raw_text))
     else:
         text_clean = text.strip()
-        entities = await resume_service.extract_entities_from_text(text_clean)
+        entities = await resume_service.extract_entities_from_text(text_clean, run_agent=validate)
         payload = ResumeExtractPreviewResponse(extracted_text=text_clean, entities=entities)
+        logger.info("Resume preview-extract: done (text, len=%d)", len(text_clean))
 
     return CommonResponse(
         success=True,
@@ -153,6 +167,7 @@ async def extract_resume_entities(
     file: UploadFile | None = File(default=None, description="Resume PDF file"),
     text: str | None = Form(default=None, description="Raw resume text (use when not uploading a file)"),
     user_id: Optional[uuid_pkg.UUID] = Query(default=None, description="Optional user ID to associate this resume with (for testing until auth is added)."),
+    validate: bool = Query(default=False, description="If true, run AI agent to validate and correct entities (requires RESUME_ENTITY_AGENT_ENABLED and OPENAI_API_KEY)."),
     session: AsyncSession = Depends(get_db),
 ):
     """
@@ -162,12 +177,20 @@ async def extract_resume_entities(
 
     Returns extracted entities: NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE.
     """
+    logger.info(
+        "Resume extract: validate=%s, has_file=%s, has_text=%s",
+        validate,
+        file is not None,
+        text is not None and bool(text and text.strip()),
+    )
     if file is not None and text is not None:
+        logger.warning("Resume extract: 400 - client sent both file and text")
         raise HTTPException(
             status_code=400,
             detail="Send either a file or text, not both.",
         )
     if file is None and (text is None or not text.strip()):
+        logger.warning("Resume extract: 400 - neither file nor text provided")
         raise HTTPException(
             status_code=400,
             detail="Send either a file (PDF) or form field 'text' with resume content.",
@@ -175,21 +198,23 @@ async def extract_resume_entities(
 
     if file is not None:
         if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+            logger.warning("Resume extract: 400 - invalid content type %s", file.content_type)
             raise HTTPException(
                 status_code=400,
                 detail="Only PDF files are accepted. Use content-type application/pdf.",
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
+            logger.warning("Resume extract: 400 - file too large (%d bytes)", len(content))
             raise HTTPException(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content)
+        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content, run_agent=validate)
         payload = ResumeExtractResponse(entities=entities, raw_text=raw_text)
     else:
         text_clean = text.strip()
-        entities = await resume_service.extract_entities_from_text(text_clean)
+        entities = await resume_service.extract_entities_from_text(text_clean, run_agent=validate)
         payload = ResumeExtractResponse(entities=entities, raw_text=text_clean)
 
     # Persist to DB (user_id nullable until auth is added)
@@ -201,6 +226,11 @@ async def extract_resume_entities(
     session.add(resume)
     await session.commit()
     await session.refresh(resume)
+    logger.info(
+        "Resume extract: done (resume_id=%s, persisted), validate=%s",
+        resume.id,
+        validate,
+    )
 
     return CommonResponse(
         success=True,
@@ -219,12 +249,20 @@ async def update_resume(
     resume_id: uuid_pkg.UUID = Path(..., description="Resume ID to update"),
     file: UploadFile | None = File(default=None, description="New resume PDF file"),
     text: str | None = Form(default=None, description="New raw resume text (use when not uploading a file)"),
+    validate: bool = Query(default=False, description="If true, run AI agent to validate and correct entities (requires RESUME_ENTITY_AGENT_ENABLED and OPENAI_API_KEY)."),
     session: AsyncSession = Depends(get_db),
 ):
     """
     Accept either **file** (PDF) or **text**. Re-runs extraction and updates the resume record.
     Returns the new extracted entities and raw_text. Use when the user confirms "Replace resume".
     """
+    logger.info(
+        "Resume update: resume_id=%s, validate=%s, has_file=%s, has_text=%s",
+        resume_id,
+        validate,
+        file is not None,
+        text is not None and bool(text and text.strip()),
+    )
     if file is not None and text is not None:
         raise HTTPException(
             status_code=400,
@@ -252,12 +290,12 @@ async def update_resume(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content)
+        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content, run_agent=validate)
         resume.entities = entities
         resume.raw_text = raw_text
     else:
         text_clean = text.strip()
-        entities = await resume_service.extract_entities_from_text(text_clean)
+        entities = await resume_service.extract_entities_from_text(text_clean, run_agent=validate)
         resume.entities = entities
         resume.raw_text = text_clean
 

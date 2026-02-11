@@ -69,6 +69,20 @@ So the **model is used only for** SKILL, OCCUPATION, EDUCATION, and EXPERIENCE; 
 
 ---
 
+## 5b. Optional AI agent (validation and correction)
+
+After NER (and rules) produce an entity dict, the backend can optionally run an **AI agent** that validates and corrects the extraction:
+
+- **Inputs:** The raw resume text and the NER-extracted entities (same six keys).
+- **Behaviour:** An LLM is prompted to check whether all relevant information in the text is captured. If something is missing or wrong, it returns a **corrected** entity dict. The agent is instructed to use **only** information from the provided text (no hallucination).
+- **Output:** The same six-key entity structure. The agent overwrites the NER output for the response; there is no merging of NER + agent.
+- **When it runs:** Only if (1) the client passes `validate=true` (query parameter) on the request, and (2) the server has `RESUME_ENTITY_AGENT_ENABLED=true` and `OPENAI_API_KEY` set. Otherwise the pipeline returns NER (and rule) output unchanged.
+- **Failure handling:** If the LLM call or response parse fails (timeout, invalid JSON, etc.), the backend falls back to the original NER entities and does not surface an error to the client.
+
+Implementation: `app/agents/resume_entity_agent.py` — `validate_and_correct_entities(raw_text, entities)`. The service layer calls it when `run_agent` is True (driven by the `validate` query flag).
+
+---
+
 ## 6. NER inference and entity building
 
 - **Tokenization:** As in §2 (Word2Vec: `word2id` exact match, max_len; BERT: tokenizer, first subword index per word).
@@ -103,10 +117,13 @@ Lists may be empty. NAME and EMAIL are from rules; the rest are from the NER mod
 ## 8. API endpoints
 
 - **POST /api/v1/resumes/extract**  
-  Accepts either a PDF file (multipart `file`) or pasted text (form field `text`). Runs the full pipeline (PDF → text if needed, then hybrid extraction), persists a resume record, and returns `entities` and `raw_text` (the exact string passed to the model).
+  Accepts either a PDF file (multipart `file`) or pasted text (form field `text`). Optional query: **validate** (boolean, default false). If `validate=true` and the AI agent is configured (see §9), entities are validated and corrected by the LLM before being returned and persisted. Runs the full pipeline (PDF → text if needed, then hybrid extraction, then optionally agent), persists a resume record, and returns `entities` and `raw_text` (the exact string passed to the model).
 
 - **POST /api/v1/resumes/preview-extract**  
-  Same input (file or text). Returns `extracted_text` and `entities` **without** saving to the database. Use this to inspect the text the model receives and the extracted entities.
+  Same input (file or text). Optional query: **validate** (boolean, default false). If `validate=true` and the AI agent is configured, entities are validated and corrected before being returned. Returns `extracted_text` and `entities` **without** saving to the database. Use this to inspect the text the model receives and the extracted entities.
+
+- **PUT /api/v1/resumes/{resume_id}**  
+  Replace a resume with new file or text; re-runs extraction. Supports the same **validate** query parameter for optional agent correction.
 
 Both endpoints return the same entity structure; the only difference is persistence and the response field names (`raw_text` vs `extracted_text`).
 
@@ -119,6 +136,8 @@ Both endpoints return the same entity structure; the only difference is persiste
 | `RESUME_NER_LOAD_DIR` | Directory containing the model (e.g. `./model/resume_ner`). If set and path exists, this is used. |
 | `RESUME_NER_GDRIVE_FOLDER_ID` | Google Drive folder ID. Used only when `RESUME_NER_LOAD_DIR` is unset or path does not exist; triggers download into the default cache dir. |
 | `RESUME_NER_GDRIVE_FILE_ID` | Google Drive file ID (e.g. zip). Same as above for a single file. |
+| `RESUME_ENTITY_AGENT_ENABLED` | If true, the AI agent can run when the client sends `validate=true`. Default false. |
+| `OPENAI_API_KEY` | API key for OpenAI. Required for the resume entity agent; when missing or when agent is disabled, `validate=true` has no effect (NER output is returned). |
 
 Optional download dependency: `gdown` (e.g. `poetry install --with download`). Required only when using the GDrive env vars.
 
@@ -139,5 +158,6 @@ The `word2vec.model` file is **not** used at inference time; the checkpoint’s 
 
 - **RESUME_NER_SETUP.md** — Where to store the model (Drive, Hugging Face, S3), how to download, and env setup.
 - **app/ml/resume_ner.py** — Implementation: model classes, `load_model`, `_parse_resume`, `parse_resume_hybrid`, rules and normalization.
-- **app/api/resume/route.py** — Extract and preview-extract endpoints; PDF vs text handling.
-- **app/api/resume/service.py** — Orchestration: PDF text extraction and call to `parse_resume_hybrid`.
+- **app/api/resume/route.py** — Extract, preview-extract, and update endpoints; PDF vs text handling; `validate` query parameter.
+- **app/api/resume/service.py** — Orchestration: PDF text extraction, `parse_resume_hybrid`, and optional `validate_and_correct_entities`.
+- **app/agents/resume_entity_agent.py** — Optional AI agent: `validate_and_correct_entities(raw_text, entities)`; LLM prompt and JSON parsing with fallback to NER output.

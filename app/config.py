@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # Upload limits for resume/job PDFs (MB)
     MAX_UPLOAD_SIZE_MB: int = 10
 
+    # Resume entity AI agent (optional validation/correction after NER)
+    RESUME_ENTITY_AGENT_ENABLED: bool = False
+    OPENAI_API_KEY: Optional[str] = None
+
     @property
     def DB_URL(self) -> str:
         """Async PostgreSQL URL for SQLAlchemy (asyncpg)."""

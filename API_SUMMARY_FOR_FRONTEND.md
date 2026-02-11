@@ -53,6 +53,8 @@ Extract entities (NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE) from a 
 
 **Request:**
 - **Content-Type:** `multipart/form-data`
+- **Query (optional):**
+  - **validate** (boolean, default false): If true and the server has the AI agent enabled (`RESUME_ENTITY_AGENT_ENABLED` + `OPENAI_API_KEY`), entities are validated and corrected by an LLM before being returned.
 - **Body (choose one):**
   - **file** (optional): PDF file (field name `file`)
   - **text** (optional): string, raw resume text (field name `text`)
@@ -105,7 +107,16 @@ const res = await fetch(`${baseUrl}/api/v1/resumes/extract`, {
   method: "POST",
   body: formData,
 });
+
+// Option C: Extract with AI validation/correction (add ?validate=true)
+const resWithValidation = await fetch(`${baseUrl}/api/v1/resumes/extract?validate=true`, {
+  method: "POST",
+  body: formData,
+});
 ```
+
+**POST /api/v1/resumes/preview-extract**  
+Same as extract but does not save to the database. Returns `extracted_text` and `entities`. Supports the same **validate** query parameter for optional AI correction.
 
 ---
 
@@ -150,7 +161,8 @@ const res = await fetch(`${baseUrl}/api/v1/jobs/extract`, {
 |--------|------|--------|
 | GET | `/` | Root info |
 | GET | `/api/v1/health` | Health check |
-| POST | `/api/v1/resumes/extract` | Extract resume entities (file or text) |
+| POST | `/api/v1/resumes/extract` | Extract resume entities (file or text; optional `?validate=true` for AI correction) |
+| POST | `/api/v1/resumes/preview-extract` | Same as extract, no DB save; optional `?validate=true` |
 | POST | `/api/v1/jobs/extract` | Extract job description entities (file or text) |
 
 **Docs (Swagger):** `GET /api/v1/docs`  
