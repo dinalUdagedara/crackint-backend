@@ -2,7 +2,7 @@
 Job description upload and entity extraction endpoint.
 """
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from app.common.http_response_model import CommonResponse
 from app.api.job.schemas import JobExtractResponse
@@ -25,6 +25,7 @@ ALLOWED_CONTENT_TYPES = SUPPORTED_FILE_CONTENT_TYPES
 async def extract_job_entities(
     file: UploadFile | None = File(default=None, description="Job description PDF file"),
     text: str | None = Form(default=None, description="Raw job description text (use when not uploading a file)"),
+    validate: bool = Query(default=False, description="If true, run AI agent to validate and correct entities (requires JOB_ENTITY_AGENT_ENABLED and OPENAI_API_KEY)."),
 ):
     """
     Accept either:
@@ -34,6 +35,8 @@ async def extract_job_entities(
     Returns extracted entities when job poster NER is loaded: JOB_TITLE, COMPANY, LOCATION,
     SALARY, SKILLS_REQUIRED, EXPERIENCE_REQUIRED, EDUCATION_REQUIRED, JOB_TYPE.
     When the model is not loaded, returns empty entities.
+    
+    If **validate** is true and JOB_ENTITY_AGENT_ENABLED is set, an AI agent will validate and correct the entities.
     """
     if file is not None and text is not None:
         raise HTTPException(
@@ -59,11 +62,13 @@ async def extract_job_entities(
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
         content_type = file.content_type or "application/octet-stream"
-        raw_text, entities = await job_service.extract_entities_from_file_bytes(content, content_type)
+        raw_text, entities = await job_service.extract_entities_from_file_bytes(
+            content, content_type, run_agent=validate
+        )
         payload = JobExtractResponse(entities=entities, raw_text=raw_text)
     else:
         text_clean = text.strip()
-        entities = await job_service.extract_entities_from_text(text_clean)
+        entities = await job_service.extract_entities_from_text(text_clean, run_agent=validate)
         payload = JobExtractResponse(entities=entities, raw_text=None)
 
     return CommonResponse(

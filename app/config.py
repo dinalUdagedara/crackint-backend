@@ -41,6 +41,8 @@ class Settings(BaseSettings):
 
     # Resume entity AI agent (optional validation/correction after NER)
     RESUME_ENTITY_AGENT_ENABLED: bool = False
+    # Job entity AI agent (optional validation/correction after NER)
+    JOB_ENTITY_AGENT_ENABLED: bool = False
     OPENAI_API_KEY: Optional[str] = None
 
     @property
