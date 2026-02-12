@@ -89,7 +89,7 @@ class Word2VecBiLSTMCRF(torch.nn.Module):
         self.lstm = nn.LSTM(
             embed_dim,
             hidden_dim // 2,
-            num_layers=1,
+            num_layers=2,
             bidirectional=True,
             batch_first=True,
         )
