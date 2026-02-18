@@ -283,9 +283,88 @@ You can now safely start frontend work using these endpoints; **Session Q&A (LLM
 
 ## 5. Session Q&A – LLM question + feedback
 
-These endpoints extend sessions with **LLM-generated questions** and **LLM feedback + scores**.
+These endpoints extend sessions with **LLM-generated questions** and **LLM feedback + scores**. The **preferred** flow for the main chat experience is the unified `POST /sessions/{id}/chat` endpoint; lower-level endpoints are kept for finer control.
 
-### 5.1 Generate next question
+### 5.1 Unified chat turn (recommended)
+
+- **Endpoint**: `POST /api/v1/sessions/{session_id}/chat`
+- **Requires**: Session Q&A agent enabled.
+
+**Request body**:
+
+```json
+{
+  "content": "The user's message for this turn (answer, greeting, or any text)."
+}
+```
+
+**Behavior (backend):**
+
+- Always stores the USER message as an `ANSWER` message.
+- If there is **no previous QUESTION** in the session:
+  - Treats this as “start the interview”.
+  - Calls the question generator to produce the first `QUESTION` and stores it.
+  - Returns both the USER `ANSWER` and ASSISTANT `QUESTION` in `new_messages`.
+- If there **is** a previous QUESTION:
+  - Classifies the USER message as greeting/off-topic vs substantive answer.
+  - For greeting/off-topic:
+    - Stores an ASSISTANT `FEEDBACK` redirect (no score), and returns `[USER ANSWER, ASSISTANT FEEDBACK redirect]`.
+  - For substantive answer:
+    - Evaluates the answer (feedback + score + tags), stores ASSISTANT `FEEDBACK`.
+    - Optionally updates session summary/title as usual.
+    - Generates and stores the **next** `QUESTION`.
+    - Returns `[USER ANSWER, ASSISTANT FEEDBACK, ASSISTANT QUESTION]`.
+
+**Response payload**:
+
+```json
+{
+  "success": true,
+  "message": "Chat turn processed.",
+  "payload": {
+    "new_messages": [
+      {
+        "id": "uuid-user",
+        "session_id": "uuid-session",
+        "sender": "USER",
+        "type": "ANSWER",
+        "content": "user message...",
+        "meta": {}
+      },
+      {
+        "id": "uuid-assistant-1",
+        "session_id": "uuid-session",
+        "sender": "ASSISTANT",
+        "type": "FEEDBACK",
+        "content": "Feedback or redirect...",
+        "meta": { "score": "78", "dimension_tags": "behavioral,structure" }
+      },
+      {
+        "id": "uuid-assistant-2",
+        "session_id": "uuid-session",
+        "sender": "ASSISTANT",
+        "type": "QUESTION",
+        "content": "Next interview question...",
+        "meta": { "difficulty": "medium", "question_type": "technical" }
+      }
+    ]
+  }
+}
+```
+
+The exact number of `new_messages` depends on the case:
+
+- First turn: `[USER ANSWER, ASSISTANT QUESTION]`.
+- Greeting/off-topic: `[USER ANSWER, ASSISTANT FEEDBACK redirect]`.
+- Normal answer: `[USER ANSWER, ASSISTANT FEEDBACK, ASSISTANT QUESTION]`.
+
+**Frontend usage (recommended):**
+
+1. User types into the chat box.
+2. Call `POST /api/v1/sessions/{id}/chat` with `{ "content": "user text" }`.
+3. On success, append `payload.new_messages` to the chat in order.
+
+### 5.2 Generate next question (low-level)
 
 - **Endpoint**: `POST /api/v1/sessions/{session_id}/next-question`
 - **Requires**: `SESSION_QA_AGENT_ENABLED=true` and `OPENAI_API_KEY` set in the backend.
@@ -330,10 +409,64 @@ These endpoints extend sessions with **LLM-generated questions** and **LLM feedb
   - Call `POST /api/v1/sessions/{id}/next-question`.
   - Append the returned ASSISTANT `QUESTION` message to the chat view (or re-fetch via `GET /with-messages`).
 
-### 5.2 Evaluate an answer
+### 5.2 Generate next question (low-level)
+
+- **Endpoint**: `POST /api/v1/sessions/{session_id}/send`
+- **Requires**: Session Q&A agent enabled, and at least one QUESTION in the session.
+
+**Request body**:
+
+```json
+{
+  "content": "The user's message (answer or any text)."
+}
+```
+
+**Behavior (backend):**
+
+1. Stores the user message as a `Message` with `sender = "USER"`, `type = "ANSWER"`, `content = content`.
+2. Classifies the message: if it's a greeting or off-topic (e.g. "hi", "thanks"), returns a short redirect; otherwise evaluates the answer and returns feedback + score.
+3. Stores the assistant response as a `Message` with `sender = "ASSISTANT"`, `type = "FEEDBACK"` (with `meta.redirect = "true"` for redirects, or `meta.score` and `meta.dimension_tags` for evaluations).
+4. Session title and summary are updated as in evaluate-answer (title once, summary every N feedbacks).
+
+**Response payload**:
+
+```json
+{
+  "success": true,
+  "message": "Reply sent and feedback stored.",
+  "payload": {
+    "user_message_id": "uuid-of-stored-user-message",
+    "feedback": "Good example and clear explanation. You could improve by...",
+    "score": 78,
+    "dimension_tags": ["behavioral", "communication", "structure"],
+    "message_id": "uuid-of-stored-feedback-message",
+    "redirect": false
+  }
+}
+```
+
+When the user message was treated as greeting/off-topic: `redirect` is `true`, `score` is `null`, and `feedback` is the redirect text (e.g. "Hey! I'm here to help. When you're ready, answer the question above...").
+
+**Frontend usage (recommended):**
+
+1. User types a message in the chat box.
+2. Call `POST /api/v1/sessions/{id}/send` with `{ "content": "user text" }`.
+3. On success, append two messages to the chat (or re-fetch `GET /with-messages`):
+   - User message: `payload.user_message_id` and the content you sent (or refetch messages).
+   - Assistant message: `payload.feedback`, `payload.message_id`; if `payload.redirect === false`, show `payload.score` and `payload.dimension_tags` as well.
+
+### 5.3 Send reply (lower-level)
+
+This endpoint is a lower-level building block used by the unified `chat` flow. You can still call it directly if you want to control when questions are asked.
+
+The **recommended** flow for user replies is one call to `POST /api/v1/sessions/{id}/chat` (see § 5.1). The flow below is kept for compatibility and custom use-cases.
+
+- **Endpoint**: `POST /api/v1/sessions/{session_id}/send`
+- **Requires**: Session Q&A agent enabled, and at least one QUESTION in the session.
 
 - **Endpoint**: `POST /api/v1/sessions/{session_id}/evaluate-answer`
-- **Requires**: Session Q&A agent enabled, and at least one previous QUESTION in the session.
+- **Requires**: Session Q&A agent enabled, and at least one previous QUESTION in the session. The frontend must **already** have stored the user message via `POST /messages` before calling this.
 
 **Request body**:
 
@@ -343,49 +476,38 @@ These endpoints extend sessions with **LLM-generated questions** and **LLM feedb
 }
 ```
 
-**Behavior (backend):**
+**Behavior (backend):** Same as send (classify redirect vs evaluate, store ASSISTANT FEEDBACK, update title/summary). Does **not** store the USER message; the client is responsible for that.
 
-- Finds the last `Message` in the session with `type = "QUESTION"` (the question being answered).
-- Calls the Session Q&A agent to evaluate the answer:
-  - Returns `feedback` text, numeric `score` (0–100), and `dimension_tags` (e.g. `["technical", "structure"]`).
-- Stores the result as a `Message` with:
-  - `sender = "ASSISTANT"`
-  - `type = "FEEDBACK"`
-  - `content = feedback text`
-  - `meta.score` and `meta.dimension_tags` (comma-separated string or list, depending on DB encoding).
-- Updates **session meta**:
-  - **Readiness score** is computed **on request** (see below) as the average of all FEEDBACK scores.
-  - **Session summary** (`summary.strengths`, `summary.areas_for_improvement`) is recomputed by the LLM **only every N feedbacks** (e.g. every 10 FEEDBACK messages) and stored on `PrepSession.summary`.
+**Response payload:** Same shape as before: `feedback`, `score`, `dimension_tags`, `message_id`, `redirect`.
 
-**Response payload**:
+**Legacy frontend usage:**
+
+1. User types an answer. Frontend appends it: `POST /api/v1/sessions/{id}/messages` with `sender = "USER"`, `type = "ANSWER"`, `content = answer`.
+2. Frontend calls `POST /api/v1/sessions/{id}/evaluate-answer` with `{ "answer": "same text" }`.
+3. On success, append the ASSISTANT `FEEDBACK` from the payload (or re-fetch `GET /with-messages`).
+
+### 5.4 Evaluate an answer (legacy — two calls)
+
+The **preferred** chat flow is now `POST /sessions/{id}/chat`. The evaluate-answer endpoint remains as a legacy building block for tools that separate message storage from evaluation.
+
+- **Endpoint**: `POST /api/v1/sessions/{session_id}/evaluate-answer`
+- **Requires**: Session Q&A agent enabled, and at least one previous QUESTION in the session. The frontend must **already** have stored the user message via `POST /messages` before calling this.
+
+**Request body**:
 
 ```json
 {
-  "success": true,
-  "message": "Answer evaluated and feedback stored.",
-  "payload": {
-    "feedback": "Good example and clear explanation. You could improve by quantifying impact and mentioning trade-offs.",
-    "score": 78,
-    "dimension_tags": ["behavioral", "communication", "structure"],
-    "message_id": "uuid-of-stored-feedback-message"
-  }
+  "answer": "Candidate's answer text to the last question."
 }
 ```
 
-**Frontend usage (typical):**
+**Behavior (backend):** Same as send (classify redirect vs evaluate, store ASSISTANT FEEDBACK, update title/summary). Does **not** store the USER message; the client is responsible for that.
 
-1. User types an answer in the chat box.
-2. Frontend **first** appends the USER answer as a message:
-   - `POST /api/v1/sessions/{id}/messages` with:
-     - `sender = "USER"`, `type = "ANSWER"`, `content = answer`, `metadata = {}`.
-3. Then frontend calls `POST /api/v1/sessions/{id}/evaluate-answer` with the same answer text.
-4. On success:
-   - Append the returned ASSISTANT `FEEDBACK` message to the chat (or re-fetch via `GET /with-messages`).
-   - Optionally re-fetch `GET /api/v1/sessions/{id}` to show:
-     - Updated `readiness_score` (computed on GET from all FEEDBACK scores).
-     - Updated `summary` (if the feedback count reached the batch threshold for recomputation).
+**Response payload:** Same shape as before: `feedback`, `score`, `dimension_tags`, `message_id`, `redirect`.
 
-### 5.3 Reading readiness score and summary
+**Legacy frontend usage:** see older docs or the send endpoint; new frontend code should not need this for the main chat.
+
+### 5.5 Reading readiness score and summary
 
 These are returned on standard session reads; no new endpoints are required:
 
@@ -404,7 +526,7 @@ These are returned on standard session reads; no new endpoints are required:
 
 **Frontend usage:**
 
-- After any evaluation, you can call:
+- After any send or evaluation, you can call:
   - `GET /api/v1/sessions/{id}` to display the latest **readiness score** and **summary** in the session header.
   - `GET /api/v1/sessions/{id}/with-messages` to refresh both chat history and meta in one shot.
 

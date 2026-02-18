@@ -10,6 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.session_qa_agent import (
+    NEXT_QUESTION_SENTINEL,
+    classify_and_redirect,
     evaluate_answer,
     generate_next_question,
     summarize_session_feedback,
@@ -17,6 +19,8 @@ from app.agents.session_qa_agent import (
 )
 from app.api.deps import get_db
 from app.api.session.schemas import (
+    ChatRequest,
+    ChatTurnPayload,
     EvaluateAnswerRequest,
     EvaluateAnswerPayload,
     MessageCreate,
@@ -26,6 +30,8 @@ from app.api.session.schemas import (
     PrepSessionCreate,
     PrepSessionRead,
     PrepSessionWithMessages,
+    SendReplyPayload,
+    SendReplyRequest,
 )
 from app.common.http_response_model import CommonResponse
 from app.models import JobPosting, Message, PrepSession, Resume
@@ -352,6 +358,514 @@ async def post_next_question(
 
 
 @router.post(
+    "/{session_id}/chat",
+    response_model=CommonResponse[ChatTurnPayload],
+    name="Chat turn (unified)",
+    summary="Unified chat endpoint: store USER message, then redirect or evaluate and maybe ask next question.",
+)
+async def post_chat_turn(
+    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    body: ChatRequest = ...,
+    db: AsyncSession = Depends(get_db),
+):
+    session_obj, resume_entities, job_entities, messages_list = await _load_session_context(db, session_id)
+    if session_obj is None:
+        raise HTTPException(status_code=404, detail="Prep session not found.")
+
+    # Find last QUESTION, if any
+    last_question_content: Optional[str] = None
+    for m in reversed(messages_list):
+        if m.type == "QUESTION":
+            last_question_content = m.content
+            break
+
+    # 1. Store USER message for this turn
+    user_message = Message(
+        session_id=session_id,
+        sender=SenderType.USER.value,
+        type="ANSWER",
+        content=body.content,
+        meta={},
+    )
+    db.add(user_message)
+    await db.commit()
+    await db.refresh(user_message)
+
+    new_messages: List[MessageRead] = [MessageRead.model_validate(user_message)]
+
+    # Case A: no QUESTION yet -> start interview by asking the first question
+    if not last_question_content:
+        role_level = RoleLevel.ASE.value
+        previous_messages: List[Dict[str, Any]] = [
+            {"sender": m.sender, "type": m.type, "content": m.content}
+            for m in messages_list
+        ] + [
+            {"sender": user_message.sender, "type": user_message.type, "content": user_message.content}
+        ]
+        try:
+            result = await generate_next_question(
+                role_level=role_level,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+                previous_messages=previous_messages,
+                question_type=None,
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=str(e),
+            ) from e
+
+        meta: Dict[str, Any] = {}
+        if result.difficulty:
+            meta["difficulty"] = result.difficulty
+        if result.question_type:
+            meta["question_type"] = result.question_type
+
+        question_message = Message(
+            session_id=session_id,
+            sender=SenderType.ASSISTANT.value,
+            type="QUESTION",
+            content=result.question,
+            meta=meta,
+        )
+        db.add(question_message)
+        await db.commit()
+        await db.refresh(question_message)
+
+        new_messages.append(MessageRead.model_validate(question_message))
+
+        return CommonResponse(
+            success=True,
+            message="Chat turn processed: first question generated.",
+            payload=ChatTurnPayload(new_messages=new_messages),
+        )
+
+    # Case B: we have a QUESTION -> classify + maybe evaluate and ask next question
+    role_level = RoleLevel.ASE.value
+
+    # 2. Classify greeting/off-topic vs substantive answer
+    try:
+        redirect_message = await classify_and_redirect(
+            question=last_question_content,
+            user_message=body.content,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=str(e),
+        ) from e
+
+    if redirect_message == NEXT_QUESTION_SENTINEL:
+        # User asked to skip to next question: generate and return it (no feedback).
+        previous_messages_skip: List[Dict[str, Any]] = [
+            {"sender": m.sender, "type": m.type, "content": m.content}
+            for m in messages_list
+        ] + [
+            {"sender": user_message.sender, "type": user_message.type, "content": user_message.content},
+        ]
+        try:
+            next_q_result = await generate_next_question(
+                role_level=role_level,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+                previous_messages=previous_messages_skip,
+                question_type=None,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        next_meta: Dict[str, Any] = {}
+        if next_q_result.difficulty:
+            next_meta["difficulty"] = next_q_result.difficulty
+        if next_q_result.question_type:
+            next_meta["question_type"] = next_q_result.question_type
+        next_question_message = Message(
+            session_id=session_id,
+            sender=SenderType.ASSISTANT.value,
+            type="QUESTION",
+            content=next_q_result.question,
+            meta=next_meta,
+        )
+        db.add(next_question_message)
+        await db.commit()
+        await db.refresh(next_question_message)
+        new_messages.append(MessageRead.model_validate(next_question_message))
+        return CommonResponse(
+            success=True,
+            message="Chat turn processed: next question (user skipped).",
+            payload=ChatTurnPayload(new_messages=new_messages),
+        )
+
+    if redirect_message:
+        assistant_message = Message(
+            session_id=session_id,
+            sender=SenderType.ASSISTANT.value,
+            type="FEEDBACK",
+            content=redirect_message,
+            meta={"redirect": "true"},
+        )
+        db.add(assistant_message)
+        await db.commit()
+        await db.refresh(assistant_message)
+
+        new_messages.append(MessageRead.model_validate(assistant_message))
+
+        return CommonResponse(
+            success=True,
+            message="Chat turn processed: redirect response (greeting/off-topic).",
+            payload=ChatTurnPayload(new_messages=new_messages),
+        )
+
+    # 3. Substantive answer: evaluate then generate next question
+    try:
+        result = await evaluate_answer(
+            question=last_question_content,
+            answer=body.content,
+            role_level=role_level,
+            job_entities=job_entities,
+            resume_entities=resume_entities,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=str(e),
+        ) from e
+
+    meta: Dict[str, Any] = {"score": str(result.score)}
+    if result.dimension_tags:
+        meta["dimension_tags"] = ",".join(result.dimension_tags)
+
+    feedback_message = Message(
+        session_id=session_id,
+        sender=SenderType.ASSISTANT.value,
+        type="FEEDBACK",
+        content=result.feedback,
+        meta=meta,
+    )
+    db.add(feedback_message)
+    await db.commit()
+    await db.refresh(feedback_message)
+
+    new_messages.append(MessageRead.model_validate(feedback_message))
+
+    # Optional: session title once when user starts chatting
+    try:
+        summary_dict: Dict[str, Any] = dict(session_obj.summary or {})
+        if not summary_dict.get("title"):
+            title_result = await generate_session_title(
+                role_level=role_level,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+                last_question=last_question_content,
+            )
+            if title_result.title:
+                summary_dict["title"] = title_result.title
+                session_obj.summary = summary_dict
+                db.add(session_obj)
+                await db.commit()
+    except ValueError:
+        pass
+
+    # Session summary (LLM) every N FEEDBACK messages
+    feedback_result = await db.execute(
+        select(Message).where(
+            Message.session_id == session_id,
+            Message.type == "FEEDBACK",
+        )
+    )
+    feedback_messages = list(feedback_result.scalars().all())
+    if len(feedback_messages) % SUMMARY_UPDATE_EVERY_N == 0:
+        feedback_items = [
+            {"content": m.content, "meta": m.meta or {}}
+            for m in feedback_messages
+            if (m.meta or {}).get("redirect") != "true"
+        ]
+        try:
+            summary_result = await summarize_session_feedback(
+                role_level=role_level,
+                feedback_items=feedback_items,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+            )
+            existing_summary: Dict[str, Any] = dict(session_obj.summary or {})
+            existing_summary["strengths"] = summary_result.strengths
+            existing_summary["areas_for_improvement"] = summary_result.areas_for_improvement
+            session_obj.summary = existing_summary
+            db.add(session_obj)
+            await db.commit()
+        except ValueError:
+            pass
+
+    # Generate next question after providing feedback
+    previous_messages_for_next_q: List[Dict[str, Any]] = [
+        {"sender": m.sender, "type": m.type, "content": m.content}
+        for m in messages_list
+    ] + [
+        {"sender": user_message.sender, "type": user_message.type, "content": user_message.content},
+        {"sender": feedback_message.sender, "type": feedback_message.type, "content": feedback_message.content},
+    ]
+
+    try:
+        next_q_result = await generate_next_question(
+            role_level=role_level,
+            job_entities=job_entities,
+            resume_entities=resume_entities,
+            previous_messages=previous_messages_for_next_q,
+            question_type=None,
+        )
+    except ValueError as e:
+        # If next-question generation fails, still return feedback
+        return CommonResponse(
+            success=True,
+            message="Chat turn processed: feedback stored (next question generation failed).",
+            payload=ChatTurnPayload(new_messages=new_messages),
+        )
+
+    next_meta: Dict[str, Any] = {}
+    if next_q_result.difficulty:
+        next_meta["difficulty"] = next_q_result.difficulty
+    if next_q_result.question_type:
+        next_meta["question_type"] = next_q_result.question_type
+
+    next_question_message = Message(
+        session_id=session_id,
+        sender=SenderType.ASSISTANT.value,
+        type="QUESTION",
+        content=next_q_result.question,
+        meta=next_meta,
+    )
+    db.add(next_question_message)
+    await db.commit()
+    await db.refresh(next_question_message)
+
+    new_messages.append(MessageRead.model_validate(next_question_message))
+
+    return CommonResponse(
+        success=True,
+        message="Chat turn processed: feedback and next question stored.",
+        payload=ChatTurnPayload(new_messages=new_messages),
+    )
+
+
+@router.post(
+    "/{session_id}/send",
+    response_model=CommonResponse[SendReplyPayload],
+    name="Send reply",
+    summary="Send the user's message, store it, and return assistant response (redirect or evaluation feedback) in one call.",
+)
+async def post_send(
+    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    body: SendReplyRequest = ...,
+    db: AsyncSession = Depends(get_db),
+):
+    session_obj, resume_entities, job_entities, messages_list = await _load_session_context(db, session_id)
+    if session_obj is None:
+        raise HTTPException(status_code=404, detail="Prep session not found.")
+
+    last_question_content: Optional[str] = None
+    for m in reversed(messages_list):
+        if m.type == "QUESTION":
+            last_question_content = m.content
+            break
+    if not last_question_content:
+        raise HTTPException(
+            status_code=400,
+            detail="No question in this session to reply to. Add a question first (e.g. via next-question).",
+        )
+
+    # 1. Store user message (USER, ANSWER)
+    user_message = Message(
+        session_id=session_id,
+        sender=SenderType.USER.value,
+        type="ANSWER",
+        content=body.content,
+        meta={},
+    )
+    db.add(user_message)
+    await db.commit()
+    await db.refresh(user_message)
+    user_message_id = user_message.id
+
+    role_level = RoleLevel.ASE.value
+
+    # 2. Classify: redirect (greeting/off-topic) or full evaluation
+    try:
+        redirect_message = await classify_and_redirect(
+            question=last_question_content,
+            user_message=body.content,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=str(e),
+        ) from e
+
+    if redirect_message == NEXT_QUESTION_SENTINEL:
+        # User asked to skip: generate next question and return it (no redirect feedback).
+        previous_messages_skip: List[Dict[str, Any]] = [
+            {"sender": m.sender, "type": m.type, "content": m.content}
+            for m in messages_list
+        ] + [
+            {"sender": user_message.sender, "type": user_message.type, "content": user_message.content},
+        ]
+        try:
+            next_q_result = await generate_next_question(
+                role_level=role_level,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+                previous_messages=previous_messages_skip,
+                question_type=None,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        next_meta: Dict[str, Any] = {}
+        if next_q_result.difficulty:
+            next_meta["difficulty"] = next_q_result.difficulty
+        if next_q_result.question_type:
+            next_meta["question_type"] = next_q_result.question_type
+        next_question_message = Message(
+            session_id=session_id,
+            sender=SenderType.ASSISTANT.value,
+            type="QUESTION",
+            content=next_q_result.question,
+            meta=next_meta,
+        )
+        db.add(next_question_message)
+        await db.commit()
+        await db.refresh(next_question_message)
+        payload = SendReplyPayload(
+            user_message_id=user_message_id,
+            feedback=next_q_result.question,
+            score=None,
+            dimension_tags=[],
+            message_id=next_question_message.id,
+            redirect=False,
+        )
+        return CommonResponse(
+            success=True,
+            message="Next question generated (user skipped).",
+            payload=payload,
+        )
+
+    if redirect_message:
+        assistant_message = Message(
+            session_id=session_id,
+            sender=SenderType.ASSISTANT.value,
+            type="FEEDBACK",
+            content=redirect_message,
+            meta={"redirect": "true"},
+        )
+        db.add(assistant_message)
+        await db.commit()
+        await db.refresh(assistant_message)
+        payload = SendReplyPayload(
+            user_message_id=user_message_id,
+            feedback=redirect_message,
+            score=None,
+            dimension_tags=[],
+            message_id=assistant_message.id,
+            redirect=True,
+        )
+        return CommonResponse(
+            success=True,
+            message="Reply stored; redirect response (greeting/off-topic).",
+            payload=payload,
+        )
+
+    # 3. Full evaluation
+    try:
+        result = await evaluate_answer(
+            question=last_question_content,
+            answer=body.content,
+            role_level=role_level,
+            job_entities=job_entities,
+            resume_entities=resume_entities,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=str(e),
+        ) from e
+
+    meta: Dict[str, Any] = {"score": str(result.score)}
+    if result.dimension_tags:
+        meta["dimension_tags"] = ",".join(result.dimension_tags)
+
+    assistant_message = Message(
+        session_id=session_id,
+        sender=SenderType.ASSISTANT.value,
+        type="FEEDBACK",
+        content=result.feedback,
+        meta=meta,
+    )
+    db.add(assistant_message)
+    await db.commit()
+    await db.refresh(assistant_message)
+
+    # Optional: session title once when user starts chatting
+    try:
+        summary_dict: Dict[str, Any] = dict(session_obj.summary or {})
+        if not summary_dict.get("title"):
+            title_result = await generate_session_title(
+                role_level=role_level,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+                last_question=last_question_content,
+            )
+            if title_result.title:
+                summary_dict["title"] = title_result.title
+                session_obj.summary = summary_dict
+                db.add(session_obj)
+                await db.commit()
+    except ValueError:
+        pass
+
+    # Session summary (LLM) every N FEEDBACK messages
+    feedback_result = await db.execute(
+        select(Message).where(
+            Message.session_id == session_id,
+            Message.type == "FEEDBACK",
+        )
+    )
+    feedback_messages = list(feedback_result.scalars().all())
+    if len(feedback_messages) % SUMMARY_UPDATE_EVERY_N == 0:
+        feedback_items = [
+            {"content": m.content, "meta": m.meta or {}}
+            for m in feedback_messages
+            if (m.meta or {}).get("redirect") != "true"
+        ]
+        try:
+            summary_result = await summarize_session_feedback(
+                role_level=role_level,
+                feedback_items=feedback_items,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+            )
+            existing_summary: Dict[str, Any] = dict(session_obj.summary or {})
+            existing_summary["strengths"] = summary_result.strengths
+            existing_summary["areas_for_improvement"] = summary_result.areas_for_improvement
+            session_obj.summary = existing_summary
+            db.add(session_obj)
+            await db.commit()
+        except ValueError:
+            pass
+
+    payload = SendReplyPayload(
+        user_message_id=user_message_id,
+        feedback=result.feedback,
+        score=result.score,
+        dimension_tags=result.dimension_tags,
+        message_id=assistant_message.id,
+        redirect=False,
+    )
+    return CommonResponse(
+        success=True,
+        message="Reply sent and feedback stored.",
+        payload=payload,
+    )
+
+
+@router.post(
     "/{session_id}/evaluate-answer",
     response_model=CommonResponse[EvaluateAnswerPayload],
     name="Evaluate answer",
@@ -378,6 +892,85 @@ async def post_evaluate_answer(
         )
 
     role_level = RoleLevel.ASE.value
+
+    # ChatGPT-style: if user message is greeting/off-topic, return a friendly redirect (no evaluation)
+    try:
+        redirect_message = await classify_and_redirect(
+            question=last_question_content,
+            user_message=body.answer,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=str(e),
+        ) from e
+
+    if redirect_message == NEXT_QUESTION_SENTINEL:
+        previous_messages_skip: List[Dict[str, Any]] = [
+            {"sender": m.sender, "type": m.type, "content": m.content}
+            for m in messages_list
+        ]
+        try:
+            next_q_result = await generate_next_question(
+                role_level=role_level,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+                previous_messages=previous_messages_skip,
+                question_type=None,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        next_meta: Dict[str, Any] = {}
+        if next_q_result.difficulty:
+            next_meta["difficulty"] = next_q_result.difficulty
+        if next_q_result.question_type:
+            next_meta["question_type"] = next_q_result.question_type
+        next_question_message = Message(
+            session_id=session_id,
+            sender=SenderType.ASSISTANT.value,
+            type="QUESTION",
+            content=next_q_result.question,
+            meta=next_meta,
+        )
+        db.add(next_question_message)
+        await db.commit()
+        await db.refresh(next_question_message)
+        payload = EvaluateAnswerPayload(
+            feedback=next_q_result.question,
+            score=None,
+            dimension_tags=[],
+            message_id=next_question_message.id,
+            redirect=False,
+        )
+        return CommonResponse(
+            success=True,
+            message="Next question generated (user skipped).",
+            payload=payload,
+        )
+
+    if redirect_message:
+        message = Message(
+            session_id=session_id,
+            sender=SenderType.ASSISTANT.value,
+            type="FEEDBACK",
+            content=redirect_message,
+            meta={"redirect": "true"},
+        )
+        db.add(message)
+        await db.commit()
+        await db.refresh(message)
+        payload = EvaluateAnswerPayload(
+            feedback=redirect_message,
+            score=None,
+            dimension_tags=[],
+            message_id=message.id,
+            redirect=True,
+        )
+        return CommonResponse(
+            success=True,
+            message="Redirect response stored (greeting/off-topic).",
+            payload=payload,
+        )
 
     try:
         result = await evaluate_answer(
@@ -438,9 +1031,11 @@ async def post_evaluate_answer(
     )
     feedback_messages = list(feedback_result.scalars().all())
     if len(feedback_messages) % SUMMARY_UPDATE_EVERY_N == 0:
+        # Exclude redirect (greeting/off-topic) messages from summary
         feedback_items = [
             {"content": m.content, "meta": m.meta or {}}
             for m in feedback_messages
+            if (m.meta or {}).get("redirect") != "true"
         ]
         try:
             summary_result = await summarize_session_feedback(
