@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     JOB_ENTITY_AGENT_ENABLED: bool = False
     OPENAI_API_KEY: Optional[str] = None
 
+    # Session Q&A agent: question generation + answer evaluation (interview prep chat)
+    SESSION_QA_AGENT_ENABLED: bool = False
+    SESSION_QA_AGENT_MODEL: str = "gpt-4o-mini"
+    SESSION_QA_AGENT_TEMPERATURE: float = 0.7
+
     @property
     def DB_URL(self) -> str:
         """Async PostgreSQL URL for SQLAlchemy (asyncpg)."""

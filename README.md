@@ -52,7 +52,8 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
    ```bash
    cp .env.example .env
-   # Edit .env: set RESUME_NER_LOAD_DIR and/or JOB_POSTER_NER_LOAD_DIR to your model directories
+   # Edit .env: set RESUME_NER_LOAD_DIR and/or JOB_POSTER_NER_LOAD_DIR to your model directories.
+   # For Session Q&A (question generation + answer evaluation): set OPENAI_API_KEY and SESSION_QA_AGENT_ENABLED=true.
    ```
 
 3. Start the server:
