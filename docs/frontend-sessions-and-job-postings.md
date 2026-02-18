@@ -270,13 +270,142 @@ Returns:
    - `POST /api/v1/job-postings` → save a `JobPosting` and store its `id`.
 3. **Start a prep session**
    - `POST /api/v1/sessions` with `user_id` (if available), `resume_id`, `job_posting_id`, `mode="TARGETED"`.
-4. **Run chat-style interview**
+4. **Run chat-style interview (baseline)**
    - For each turn:
      - Frontend sends user message via `POST /api/v1/sessions/{session_id}/messages`.
-     - (Later) another endpoint will generate assistant questions/feedback based on LLM.
    - Frontend shows chat using:
      - `GET /api/v1/sessions/{session_id}/with-messages` or
      - `GET /api/v1/sessions/{session_id}` + `GET /api/v1/sessions/{session_id}/messages`.
 
-You can now safely start frontend work using these endpoints; future features (LLM question generation, scoring, readiness) will plug into the same `sessions` and `messages` APIs without breaking them.
+You can now safely start frontend work using these endpoints; **Session Q&A (LLM)** plugs into the same `sessions` and `messages` APIs via the new endpoints below.
+
+---
+
+## 5. Session Q&A – LLM question + feedback
+
+These endpoints extend sessions with **LLM-generated questions** and **LLM feedback + scores**.
+
+### 5.1 Generate next question
+
+- **Endpoint**: `POST /api/v1/sessions/{session_id}/next-question`
+- **Requires**: `SESSION_QA_AGENT_ENABLED=true` and `OPENAI_API_KEY` set in the backend.
+
+**Request body** (all fields optional):
+
+```json
+{
+  "question_type": "technical",  // or "behavioral" | "system_design"
+  "role_level": "ASE"            // "INTERN" | "ASE" | "SSE" | "OTHER"
+}
+```
+
+**Behavior (backend):**
+
+- Loads the `PrepSession`, its `Resume` and `JobPosting` entities (if linked), and existing messages.
+- Calls the Session Q&A agent to generate **one** new interview question (avoiding repeats).
+- Stores the result as a `Message` with:
+  - `sender = "ASSISTANT"`
+  - `type = "QUESTION"`
+  - `content = question text`
+  - `meta.difficulty` and `meta.question_type` if provided by the model.
+
+**Response payload**:
+
+```json
+{
+  "success": true,
+  "message": "Next question generated and stored.",
+  "payload": {
+    "question": "Tell me about a challenging project you worked on.",
+    "difficulty": "medium",
+    "question_type": "behavioral",
+    "message_id": "uuid-of-stored-message"
+  }
+}
+```
+
+**Frontend usage (typical):**
+
+- When the user clicks **“Ask next question”**:
+  - Call `POST /api/v1/sessions/{id}/next-question`.
+  - Append the returned ASSISTANT `QUESTION` message to the chat view (or re-fetch via `GET /with-messages`).
+
+### 5.2 Evaluate an answer
+
+- **Endpoint**: `POST /api/v1/sessions/{session_id}/evaluate-answer`
+- **Requires**: Session Q&A agent enabled, and at least one previous QUESTION in the session.
+
+**Request body**:
+
+```json
+{
+  "answer": "Candidate's answer text to the last question."
+}
+```
+
+**Behavior (backend):**
+
+- Finds the last `Message` in the session with `type = "QUESTION"` (the question being answered).
+- Calls the Session Q&A agent to evaluate the answer:
+  - Returns `feedback` text, numeric `score` (0–100), and `dimension_tags` (e.g. `["technical", "structure"]`).
+- Stores the result as a `Message` with:
+  - `sender = "ASSISTANT"`
+  - `type = "FEEDBACK"`
+  - `content = feedback text`
+  - `meta.score` and `meta.dimension_tags` (comma-separated string or list, depending on DB encoding).
+- Updates **session meta**:
+  - **Readiness score** is computed **on request** (see below) as the average of all FEEDBACK scores.
+  - **Session summary** (`summary.strengths`, `summary.areas_for_improvement`) is recomputed by the LLM **only every N feedbacks** (e.g. every 10 FEEDBACK messages) and stored on `PrepSession.summary`.
+
+**Response payload**:
+
+```json
+{
+  "success": true,
+  "message": "Answer evaluated and feedback stored.",
+  "payload": {
+    "feedback": "Good example and clear explanation. You could improve by quantifying impact and mentioning trade-offs.",
+    "score": 78,
+    "dimension_tags": ["behavioral", "communication", "structure"],
+    "message_id": "uuid-of-stored-feedback-message"
+  }
+}
+```
+
+**Frontend usage (typical):**
+
+1. User types an answer in the chat box.
+2. Frontend **first** appends the USER answer as a message:
+   - `POST /api/v1/sessions/{id}/messages` with:
+     - `sender = "USER"`, `type = "ANSWER"`, `content = answer`, `metadata = {}`.
+3. Then frontend calls `POST /api/v1/sessions/{id}/evaluate-answer` with the same answer text.
+4. On success:
+   - Append the returned ASSISTANT `FEEDBACK` message to the chat (or re-fetch via `GET /with-messages`).
+   - Optionally re-fetch `GET /api/v1/sessions/{id}` to show:
+     - Updated `readiness_score` (computed on GET from all FEEDBACK scores).
+     - Updated `summary` (if the feedback count reached the batch threshold for recomputation).
+
+### 5.3 Reading readiness score and summary
+
+These are returned on standard session reads; no new endpoints are required:
+
+- **Endpoints**:
+  - `GET /api/v1/sessions/{session_id}`
+  - `GET /api/v1/sessions/{session_id}/with-messages`
+
+**Fields in the `PrepSessionRead` / `PrepSessionWithMessages` payload:**
+
+- `readiness_score` (number or null)
+  - Computed **on each GET** from all FEEDBACK messages’ `meta.score` values in that session.
+- `summary` (object)
+  - `summary.title` (optional): short, human-friendly session title generated by the Session Q&A agent when the user starts chatting.
+  - `summary.strengths`: session-level strengths summary (string) – updated by LLM every N FEEDBACKs.
+  - `summary.areas_for_improvement`: main areas to work on (string).
+
+**Frontend usage:**
+
+- After any evaluation, you can call:
+  - `GET /api/v1/sessions/{id}` to display the latest **readiness score** and **summary** in the session header.
+  - `GET /api/v1/sessions/{id}/with-messages` to refresh both chat history and meta in one shot.
+
 

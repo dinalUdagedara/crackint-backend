@@ -162,6 +162,42 @@ No parameters or body.
 
 ---
 
+## Sessions (prep)
+
+| Method | Path | Summary |
+|--------|------|--------|
+| POST | `/sessions` | Create a prep session (user_id, resume_id, job_posting_id, mode) |
+| GET | `/sessions` | List prep sessions |
+| GET | `/sessions/{session_id}` | Get session by ID (no messages) |
+| DELETE | `/sessions/{session_id}` | Delete session by ID (messages deleted via cascade) |
+| GET | `/sessions/{session_id}/with-messages` | Get session with messages |
+| GET | `/sessions/{session_id}/messages` | List messages in session |
+| POST | `/sessions/{session_id}/messages` | Append a message (QUESTION, ANSWER, or FEEDBACK) |
+| POST | `/sessions/{session_id}/next-question` | Generate next interview question (requires Session Q&A agent) |
+| POST | `/sessions/{session_id}/evaluate-answer` | Evaluate candidate's answer; store feedback (requires Session Q&A agent) |
+
+### POST `/sessions/{session_id}/next-question`
+
+**Requires:** `SESSION_QA_AGENT_ENABLED=true` and `OPENAI_API_KEY` set. Otherwise returns `503`.
+
+**Body (optional):** `{ "question_type": "technical" | "behavioral" | "system_design", "role_level": "INTERN" | "ASE" | "SSE" | "OTHER" }`. Default `role_level` is ASE.
+
+**Response payload:** `question`, `difficulty`, `question_type`, `message_id` (the stored ASSISTANT QUESTION message).
+
+**Errors:** `404` session not found. `503` if Session Q&A agent disabled or LLM unavailable.
+
+### POST `/sessions/{session_id}/evaluate-answer`
+
+**Requires:** Session Q&A agent enabled. Evaluates against the **last QUESTION** message in the session.
+
+**Body:** `{ "answer": "candidate's answer text" }`.
+
+**Response payload:** `feedback`, `score` (0–100), `dimension_tags`, `message_id` (the stored ASSISTANT FEEDBACK message).
+
+**Errors:** `400` if no question in session. `404` session not found. `503` if agent disabled or LLM unavailable.
+
+---
+
 ## Interactive docs
 
 - **Swagger UI:** [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)

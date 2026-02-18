@@ -3,12 +3,14 @@ Request/response schemas for prep session and message APIs.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import uuid as uuid_pkg
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.common import MessageType, SenderType, SessionMode, SessionStatus
+from app.schemas.common import MessageType, RoleLevel, SenderType, SessionMode, SessionStatus
+
+QuestionTypeLiteral = Literal["technical", "behavioral", "system_design"]
 
 
 class PrepSessionCreate(BaseModel):
@@ -112,5 +114,64 @@ class PrepSessionWithMessages(PrepSessionRead):
     messages: List[MessageRead] = Field(
         default_factory=list,
         description="Messages in this session, ordered by created_at ascending.",
+    )
+
+
+# --- Session Q&A (next-question, evaluate-answer) ---
+
+
+class NextQuestionRequest(BaseModel):
+    """Body for POST /sessions/{id}/next-question."""
+
+    question_type: Optional[QuestionTypeLiteral] = Field(
+        default=None,
+        description="Requested type: technical, behavioral, or system_design.",
+    )
+    role_level: Optional[RoleLevel] = Field(
+        default=RoleLevel.ASE,
+        description="Candidate level for question difficulty (default: ASE).",
+    )
+
+
+class NextQuestionPayload(BaseModel):
+    """Payload returned when a new question is generated."""
+
+    question: str = Field(..., description="Generated interview question.")
+    difficulty: Optional[str] = Field(
+        default=None,
+        description="easy, medium, or hard.",
+    )
+    question_type: Optional[str] = Field(
+        default=None,
+        description="technical, behavioral, or system_design.",
+    )
+    message_id: uuid_pkg.UUID = Field(
+        ...,
+        description="ID of the stored Message (sender=ASSISTANT, type=QUESTION).",
+    )
+
+
+class EvaluateAnswerRequest(BaseModel):
+    """Body for POST /sessions/{id}/evaluate-answer."""
+
+    answer: str = Field(
+        ...,
+        min_length=1,
+        description="The candidate's answer text to evaluate.",
+    )
+
+
+class EvaluateAnswerPayload(BaseModel):
+    """Payload returned after evaluating an answer."""
+
+    feedback: str = Field(..., description="Text feedback for the candidate.")
+    score: int = Field(..., ge=0, le=100, description="Score 0-100.")
+    dimension_tags: List[str] = Field(
+        default_factory=list,
+        description="Tags such as technical, communication, structure.",
+    )
+    message_id: uuid_pkg.UUID = Field(
+        ...,
+        description="ID of the stored Message (sender=ASSISTANT, type=FEEDBACK).",
     )
 

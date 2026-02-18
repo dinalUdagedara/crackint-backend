@@ -2,25 +2,39 @@
 Prep session and message endpoints (MVP chat session APIs).
 """
 
-from typing import List
+from typing import Any, Dict, List, Optional
 import uuid as uuid_pkg
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.session_qa_agent import (
+    evaluate_answer,
+    generate_next_question,
+    summarize_session_feedback,
+    generate_session_title,
+)
 from app.api.deps import get_db
 from app.api.session.schemas import (
+    EvaluateAnswerRequest,
+    EvaluateAnswerPayload,
     MessageCreate,
     MessageRead,
+    NextQuestionPayload,
+    NextQuestionRequest,
     PrepSessionCreate,
     PrepSessionRead,
     PrepSessionWithMessages,
 )
 from app.common.http_response_model import CommonResponse
-from app.models import Message, PrepSession
+from app.models import JobPosting, Message, PrepSession, Resume
+from app.schemas.common import RoleLevel, SenderType
 
 router = APIRouter()
+
+# Update session summary (LLM) only every N FEEDBACK messages to reduce cost.
+SUMMARY_UPDATE_EVERY_N = 10
 
 
 @router.post(
@@ -71,6 +85,30 @@ async def list_prep_sessions(
     )
 
 
+async def _compute_readiness_from_feedback(
+    db: AsyncSession, session_id: uuid_pkg.UUID
+) -> Optional[float]:
+    """Compute readiness_score as average of FEEDBACK message scores (on request)."""
+    result = await db.execute(
+        select(Message).where(
+            Message.session_id == session_id,
+            Message.type == "FEEDBACK",
+        )
+    )
+    messages = list(result.scalars().all())
+    scores: List[float] = []
+    for m in messages:
+        raw = (m.meta or {}).get("score")
+        if raw is not None:
+            try:
+                scores.append(float(raw))
+            except (TypeError, ValueError):
+                pass
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores), 2)
+
+
 @router.get(
     "/{session_id}",
     response_model=CommonResponse[PrepSessionRead],
@@ -84,10 +122,37 @@ async def get_prep_session(
     record = await db.get(PrepSession, session_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Prep session not found.")
+    readiness_score = await _compute_readiness_from_feedback(db, session_id)
+    payload_dict = PrepSessionRead.model_validate(record).model_dump()
+    payload_dict["readiness_score"] = readiness_score
     return CommonResponse(
         success=True,
         message="Prep session retrieved successfully",
-        payload=PrepSessionRead.model_validate(record),
+        payload=PrepSessionRead(**payload_dict),
+    )
+
+
+@router.delete(
+    "/{session_id}",
+    response_model=CommonResponse[Dict[str, Any]],
+    name="Delete prep session",
+    summary="Delete a preparation session by ID (messages are deleted via FK cascade).",
+)
+async def delete_prep_session(
+    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    db: AsyncSession = Depends(get_db),
+):
+    record = await db.get(PrepSession, session_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Prep session not found.")
+
+    await db.delete(record)
+    await db.commit()
+
+    return CommonResponse(
+        success=True,
+        message="Prep session deleted successfully",
+        payload={"id": str(session_id)},
     )
 
 
@@ -175,14 +240,235 @@ async def get_session_with_messages(
     rows = list(result.scalars().all())
     messages = [MessageRead.model_validate(row) for row in rows]
 
-    base = PrepSessionRead.model_validate(session_obj)
+    readiness_score = await _compute_readiness_from_feedback(db, session_id)
+    base_dict = PrepSessionRead.model_validate(session_obj).model_dump()
+    base_dict["readiness_score"] = readiness_score
     combined = PrepSessionWithMessages(
-        **base.model_dump(),
+        **base_dict,
         messages=messages,
     )
     return CommonResponse(
         success=True,
         message="Prep session with messages retrieved successfully",
         payload=combined,
+    )
+
+
+# --- Session Q&A (requires SESSION_QA_AGENT_ENABLED and OPENAI_API_KEY) ---
+
+
+async def _load_session_context(db: AsyncSession, session_id: uuid_pkg.UUID):
+    """Load prep session with resume, job posting, and messages. Returns (session_obj, resume_entities, job_entities, messages_list)."""
+    session_obj = await db.get(PrepSession, session_id)
+    if session_obj is None:
+        return None, {}, {}, []
+
+    resume_entities: Dict[str, List[str]] = {}
+    if session_obj.resume_id:
+        resume = await db.get(Resume, session_obj.resume_id)
+        if resume and resume.entities:
+            resume_entities = dict(resume.entities)
+
+    job_entities: Dict[str, List[str]] = {}
+    if session_obj.job_posting_id:
+        job = await db.get(JobPosting, session_obj.job_posting_id)
+        if job and job.entities:
+            job_entities = dict(job.entities)
+
+    result = await db.execute(
+        select(Message)
+        .where(Message.session_id == session_id)
+        .order_by(Message.created_at.asc())
+    )
+    messages_list = list(result.scalars().all())
+
+    return session_obj, resume_entities, job_entities, messages_list
+
+
+@router.post(
+    "/{session_id}/next-question",
+    response_model=CommonResponse[NextQuestionPayload],
+    name="Generate next question",
+    summary="Generate the next interview question for this session and store it as a message.",
+)
+async def post_next_question(
+    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    body: NextQuestionRequest = NextQuestionRequest(),
+    db: AsyncSession = Depends(get_db),
+):
+    session_obj, resume_entities, job_entities, messages_list = await _load_session_context(db, session_id)
+    if session_obj is None:
+        raise HTTPException(status_code=404, detail="Prep session not found.")
+
+    role_level = (body.role_level or RoleLevel.ASE).value
+    previous_messages: List[Dict[str, Any]] = [
+        {"sender": m.sender, "type": m.type, "content": m.content}
+        for m in messages_list
+    ]
+    question_type = body.question_type if body.question_type else None
+
+    try:
+        result = await generate_next_question(
+            role_level=role_level,
+            job_entities=job_entities,
+            resume_entities=resume_entities,
+            previous_messages=previous_messages,
+            question_type=question_type,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=str(e),
+        ) from e
+
+    meta: Dict[str, Any] = {}
+    if result.difficulty:
+        meta["difficulty"] = result.difficulty
+    if result.question_type:
+        meta["question_type"] = result.question_type
+
+    message = Message(
+        session_id=session_id,
+        sender=SenderType.ASSISTANT.value,
+        type="QUESTION",
+        content=result.question,
+        meta=meta,
+    )
+    db.add(message)
+    await db.commit()
+    await db.refresh(message)
+
+    payload = NextQuestionPayload(
+        question=result.question,
+        difficulty=result.difficulty,
+        question_type=result.question_type,
+        message_id=message.id,
+    )
+    return CommonResponse(
+        success=True,
+        message="Next question generated and stored.",
+        payload=payload,
+    )
+
+
+@router.post(
+    "/{session_id}/evaluate-answer",
+    response_model=CommonResponse[EvaluateAnswerPayload],
+    name="Evaluate answer",
+    summary="Evaluate the candidate's answer (against the last question) and store feedback as a message.",
+)
+async def post_evaluate_answer(
+    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    body: EvaluateAnswerRequest = ...,
+    db: AsyncSession = Depends(get_db),
+):
+    session_obj, resume_entities, job_entities, messages_list = await _load_session_context(db, session_id)
+    if session_obj is None:
+        raise HTTPException(status_code=404, detail="Prep session not found.")
+
+    last_question_content: Optional[str] = None
+    for m in reversed(messages_list):
+        if m.type == "QUESTION":
+            last_question_content = m.content
+            break
+    if not last_question_content:
+        raise HTTPException(
+            status_code=400,
+            detail="No question in this session to evaluate against. Add a question first (e.g. via next-question).",
+        )
+
+    role_level = RoleLevel.ASE.value
+
+    try:
+        result = await evaluate_answer(
+            question=last_question_content,
+            answer=body.answer,
+            role_level=role_level,
+            job_entities=job_entities,
+            resume_entities=resume_entities,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=str(e),
+        ) from e
+
+    meta: Dict[str, Any] = {
+        "score": str(result.score),
+    }
+    if result.dimension_tags:
+        meta["dimension_tags"] = ",".join(result.dimension_tags)
+
+    message = Message(
+        session_id=session_id,
+        sender=SenderType.ASSISTANT.value,
+        type="FEEDBACK",
+        content=result.feedback,
+        meta=meta,
+    )
+    db.add(message)
+    await db.commit()
+    await db.refresh(message)
+
+    # Optionally generate a human-friendly session title once, when the user starts chatting
+    try:
+        summary_dict: Dict[str, Any] = dict(session_obj.summary or {})
+        if not summary_dict.get("title"):
+            title_result = await generate_session_title(
+                role_level=role_level,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+                last_question=last_question_content,
+            )
+            if title_result.title:
+                summary_dict["title"] = title_result.title
+                session_obj.summary = summary_dict
+                db.add(session_obj)
+                await db.commit()
+    except ValueError:
+        # If title generation fails, continue without blocking the flow
+        pass
+
+    # Update session summary (LLM) only every N FEEDBACK messages
+    feedback_result = await db.execute(
+        select(Message).where(
+            Message.session_id == session_id,
+            Message.type == "FEEDBACK",
+        )
+    )
+    feedback_messages = list(feedback_result.scalars().all())
+    if len(feedback_messages) % SUMMARY_UPDATE_EVERY_N == 0:
+        feedback_items = [
+            {"content": m.content, "meta": m.meta or {}}
+            for m in feedback_messages
+        ]
+        try:
+            summary_result = await summarize_session_feedback(
+                role_level=role_level,
+                feedback_items=feedback_items,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+            )
+            existing_summary: Dict[str, Any] = dict(session_obj.summary or {})
+            existing_summary["strengths"] = summary_result.strengths
+            existing_summary["areas_for_improvement"] = (
+                summary_result.areas_for_improvement
+            )
+            session_obj.summary = existing_summary
+            db.add(session_obj)
+            await db.commit()
+        except ValueError:
+            pass  # Keep existing summary; readiness is computed on request
+
+    payload = EvaluateAnswerPayload(
+        feedback=result.feedback,
+        score=result.score,
+        dimension_tags=result.dimension_tags,
+        message_id=message.id,
+    )
+    return CommonResponse(
+        success=True,
+        message="Answer evaluated and feedback stored.",
+        payload=payload,
     )
 
