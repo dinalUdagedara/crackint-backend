@@ -48,12 +48,13 @@ class TimestampModel(SQLModel):
 
 
 class User(UUIDModel, TimestampModel, table=True):
-    """User table: minimal fields for now (id, name, email, timestamps)."""
+    """User table: id, name, email, hashed_password, timestamps."""
 
     __tablename__ = "users"
 
     name: str = Field(nullable=False)
     email: str = Field(nullable=False, index=True, unique=True)
+    hashed_password: str = Field(nullable=False)
 
 
 class Resume(UUIDModel, TimestampModel, table=True):
