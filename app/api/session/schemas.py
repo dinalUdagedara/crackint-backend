@@ -18,7 +18,7 @@ class PrepSessionCreate(BaseModel):
 
     user_id: Optional[uuid_pkg.UUID] = Field(
         default=None,
-        description="User who owns the session (nullable until auth is added).",
+        description="Ignored; owner is set from the authenticated user.",
     )
     resume_id: Optional[uuid_pkg.UUID] = Field(
         default=None,

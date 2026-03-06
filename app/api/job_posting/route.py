@@ -2,17 +2,16 @@
 Job posting CRUD endpoints.
 """
 
-from typing import Optional
 import uuid as uuid_pkg
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_current_user, get_db
 from app.api.job_posting.schemas import JobPostingCreate, JobPostingListItem
 from app.common.http_response_model import CommonResponse, PageMeta
-from app.models import JobPosting
+from app.models import JobPosting, User
 
 router = APIRouter()
 
@@ -24,13 +23,9 @@ MAX_PAGE_SIZE = 100
     "",
     response_model=CommonResponse[list[JobPostingListItem]],
     name="List job postings",
-    summary="List job postings with optional user filter and pagination.",
+    summary="List the current user's job postings with pagination.",
 )
 async def list_job_postings(
-    user_id: Optional[uuid_pkg.UUID] = Query(
-        default=None,
-        description="Filter by user ID.",
-    ),
     page: int = Query(
         1,
         ge=1,
@@ -42,12 +37,15 @@ async def list_job_postings(
         le=MAX_PAGE_SIZE,
         description="Items per page.",
     ),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    """Returns a paginated list of job postings. Optionally filter by **user_id**."""
-    count_q = select(func.count()).select_from(JobPosting)
-    if user_id is not None:
-        count_q = count_q.where(JobPosting.user_id == user_id)
+    """Returns a paginated list of job postings for the authenticated user."""
+    count_q = (
+        select(func.count())
+        .select_from(JobPosting)
+        .where(JobPosting.user_id == current_user.id)
+    )
     total_result = await session.execute(count_q)
     total_items = total_result.scalar_one() or 0
     total_pages = max(1, (total_items + page_size - 1) // page_size)
@@ -55,12 +53,11 @@ async def list_job_postings(
     offset = (page - 1) * page_size
     q = (
         select(JobPosting)
+        .where(JobPosting.user_id == current_user.id)
         .order_by(JobPosting.updated_at.desc())
         .offset(offset)
         .limit(page_size)
     )
-    if user_id is not None:
-        q = q.where(JobPosting.user_id == user_id)
     result = await session.execute(q)
     rows = list(result.scalars().all())
 
@@ -87,11 +84,12 @@ async def list_job_postings(
 )
 async def get_job_posting(
     job_posting_id: uuid_pkg.UUID = Path(..., description="Job posting ID."),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    """Returns the job posting record if found; 404 otherwise."""
+    """Returns the job posting record if found and owned by the current user; 404 otherwise."""
     row = await session.get(JobPosting, job_posting_id)
-    if row is None:
+    if row is None or row.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Job posting not found.")
     return CommonResponse(
         success=True,
@@ -108,13 +106,14 @@ async def get_job_posting(
 )
 async def create_job_posting(
     body: JobPostingCreate,
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """
     Create a new job posting record from entities produced by `/jobs/extract`.
     """
     record = JobPosting(
-        user_id=body.user_id,
+        user_id=current_user.id,
         entities=body.entities,
         raw_text=body.raw_text,
         location=body.location,
@@ -128,4 +127,3 @@ async def create_job_posting(
         message="Job posting created successfully",
         payload=JobPostingListItem.model_validate(record),
     )
-

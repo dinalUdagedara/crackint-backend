@@ -58,7 +58,7 @@ class User(UUIDModel, TimestampModel, table=True):
 
 
 class Resume(UUIDModel, TimestampModel, table=True):
-    """Resume table: extracted entities (JSONB) and optional raw text; user_id nullable until auth."""
+    """Resume table: extracted entities (JSONB) and optional raw text; user_id set from auth."""
 
     __tablename__ = "resumes"
 
@@ -76,7 +76,7 @@ class Resume(UUIDModel, TimestampModel, table=True):
 
 
 class JobPosting(UUIDModel, TimestampModel, table=True):
-    """Job posting table: extracted entities (JSONB) and optional raw text; user_id nullable until auth."""
+    """Job posting table: extracted entities (JSONB) and optional raw text; user_id set from auth."""
 
     __tablename__ = "job_postings"
 

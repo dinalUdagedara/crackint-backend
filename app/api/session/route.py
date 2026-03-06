@@ -17,7 +17,7 @@ from app.agents.session_qa_agent import (
     summarize_session_feedback,
     generate_session_title,
 )
-from app.api.deps import get_db
+from app.api.deps import get_current_user, get_db
 from app.api.session.schemas import (
     ChatRequest,
     ChatTurnPayload,
@@ -34,13 +34,25 @@ from app.api.session.schemas import (
     SendReplyRequest,
 )
 from app.common.http_response_model import CommonResponse
-from app.models import JobPosting, Message, PrepSession, Resume
+from app.models import JobPosting, Message, PrepSession, Resume, User
 from app.schemas.common import RoleLevel, SenderType
 
 router = APIRouter()
 
 # Update session summary (LLM) only every N FEEDBACK messages to reduce cost.
 SUMMARY_UPDATE_EVERY_N = 10
+
+
+async def get_own_prep_session(
+    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> PrepSession:
+    """Load prep session by ID; raise 404 if not found or not owned by current user."""
+    record = await db.get(PrepSession, session_id)
+    if record is None or record.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Prep session not found.")
+    return record
 
 
 @router.post(
@@ -51,10 +63,11 @@ SUMMARY_UPDATE_EVERY_N = 10
 )
 async def create_prep_session(
     body: PrepSessionCreate,
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     record = PrepSession(
-        user_id=body.user_id,
+        user_id=current_user.id,
         resume_id=body.resume_id,
         job_posting_id=body.job_posting_id,
         mode=body.mode.value,
@@ -74,13 +87,16 @@ async def create_prep_session(
     "",
     response_model=CommonResponse[List[PrepSessionRead]],
     name="List prep sessions",
-    summary="List all prep sessions (optionally filter by user).",
+    summary="List the current user's prep sessions.",
 )
 async def list_prep_sessions(
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     result = await session.execute(
-        select(PrepSession).order_by(PrepSession.updated_at.desc())
+        select(PrepSession)
+        .where(PrepSession.user_id == current_user.id)
+        .order_by(PrepSession.updated_at.desc())
     )
     rows = list(result.scalars().all())
     payload = [PrepSessionRead.model_validate(row) for row in rows]
@@ -122,14 +138,11 @@ async def _compute_readiness_from_feedback(
     summary="Get a single preparation session by ID (without messages).",
 )
 async def get_prep_session(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     db: AsyncSession = Depends(get_db),
 ):
-    record = await db.get(PrepSession, session_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Prep session not found.")
-    readiness_score = await _compute_readiness_from_feedback(db, session_id)
-    payload_dict = PrepSessionRead.model_validate(record).model_dump()
+    readiness_score = await _compute_readiness_from_feedback(db, prep_session.id)
+    payload_dict = PrepSessionRead.model_validate(prep_session).model_dump()
     payload_dict["readiness_score"] = readiness_score
     return CommonResponse(
         success=True,
@@ -145,20 +158,16 @@ async def get_prep_session(
     summary="Delete a preparation session by ID (messages are deleted via FK cascade).",
 )
 async def delete_prep_session(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     db: AsyncSession = Depends(get_db),
 ):
-    record = await db.get(PrepSession, session_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="Prep session not found.")
-
-    await db.delete(record)
+    await db.delete(prep_session)
     await db.commit()
 
     return CommonResponse(
         success=True,
         message="Prep session deleted successfully",
-        payload={"id": str(session_id)},
+        payload={"id": str(prep_session.id)},
     )
 
 
@@ -169,17 +178,12 @@ async def delete_prep_session(
     summary="List all chat messages in a preparation session.",
 )
 async def list_session_messages(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     db: AsyncSession = Depends(get_db),
 ):
-    # Ensure session exists
-    session_obj = await db.get(PrepSession, session_id)
-    if session_obj is None:
-        raise HTTPException(status_code=404, detail="Prep session not found.")
-
     result = await db.execute(
         select(Message)
-        .where(Message.session_id == session_id)
+        .where(Message.session_id == prep_session.id)
         .order_by(Message.created_at.asc())
     )
     rows = list(result.scalars().all())
@@ -198,16 +202,12 @@ async def list_session_messages(
     summary="Append a new chat message (question, answer, or feedback) to an existing prep session.",
 )
 async def append_message(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     body: MessageCreate = ...,
     db: AsyncSession = Depends(get_db),
 ):
-    session_obj = await db.get(PrepSession, session_id)
-    if session_obj is None:
-        raise HTTPException(status_code=404, detail="Prep session not found.")
-
     message = Message(
-        session_id=session_id,
+        session_id=prep_session.id,
         sender=body.sender.value,
         type=body.type.value,
         content=body.content,
@@ -231,23 +231,19 @@ async def append_message(
     summary="Get a session including its ordered messages.",
 )
 async def get_session_with_messages(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     db: AsyncSession = Depends(get_db),
 ):
-    session_obj = await db.get(PrepSession, session_id)
-    if session_obj is None:
-        raise HTTPException(status_code=404, detail="Prep session not found.")
-
     result = await db.execute(
         select(Message)
-        .where(Message.session_id == session_id)
+        .where(Message.session_id == prep_session.id)
         .order_by(Message.created_at.asc())
     )
     rows = list(result.scalars().all())
     messages = [MessageRead.model_validate(row) for row in rows]
 
-    readiness_score = await _compute_readiness_from_feedback(db, session_id)
-    base_dict = PrepSessionRead.model_validate(session_obj).model_dump()
+    readiness_score = await _compute_readiness_from_feedback(db, prep_session.id)
+    base_dict = PrepSessionRead.model_validate(prep_session).model_dump()
     base_dict["readiness_score"] = readiness_score
     combined = PrepSessionWithMessages(
         **base_dict,
@@ -298,11 +294,13 @@ async def _load_session_context(db: AsyncSession, session_id: uuid_pkg.UUID):
     summary="Generate the next interview question for this session and store it as a message.",
 )
 async def post_next_question(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     body: NextQuestionRequest = NextQuestionRequest(),
     db: AsyncSession = Depends(get_db),
 ):
-    session_obj, resume_entities, job_entities, messages_list = await _load_session_context(db, session_id)
+    session_obj, resume_entities, job_entities, messages_list = (
+        await _load_session_context(db, prep_session.id)
+    )
     if session_obj is None:
         raise HTTPException(status_code=404, detail="Prep session not found.")
 
@@ -334,7 +332,7 @@ async def post_next_question(
         meta["question_type"] = result.question_type
 
     message = Message(
-        session_id=session_id,
+        session_id=prep_session.id,
         sender=SenderType.ASSISTANT.value,
         type="QUESTION",
         content=result.question,
@@ -364,13 +362,16 @@ async def post_next_question(
     summary="Unified chat endpoint: store USER message, then redirect or evaluate and maybe ask next question.",
 )
 async def post_chat_turn(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     body: ChatRequest = ...,
     db: AsyncSession = Depends(get_db),
 ):
-    session_obj, resume_entities, job_entities, messages_list = await _load_session_context(db, session_id)
+    session_obj, resume_entities, job_entities, messages_list = (
+        await _load_session_context(db, prep_session.id)
+    )
     if session_obj is None:
         raise HTTPException(status_code=404, detail="Prep session not found.")
+    session_id = prep_session.id
 
     # Find last QUESTION, if any
     last_question_content: Optional[str] = None
@@ -400,7 +401,11 @@ async def post_chat_turn(
             {"sender": m.sender, "type": m.type, "content": m.content}
             for m in messages_list
         ] + [
-            {"sender": user_message.sender, "type": user_message.type, "content": user_message.content}
+            {
+                "sender": user_message.sender,
+                "type": user_message.type,
+                "content": user_message.content,
+            }
         ]
         try:
             result = await generate_next_question(
@@ -462,7 +467,11 @@ async def post_chat_turn(
             {"sender": m.sender, "type": m.type, "content": m.content}
             for m in messages_list
         ] + [
-            {"sender": user_message.sender, "type": user_message.type, "content": user_message.content},
+            {
+                "sender": user_message.sender,
+                "type": user_message.type,
+                "content": user_message.content,
+            },
         ]
         try:
             next_q_result = await generate_next_question(
@@ -589,7 +598,9 @@ async def post_chat_turn(
             )
             existing_summary: Dict[str, Any] = dict(session_obj.summary or {})
             existing_summary["strengths"] = summary_result.strengths
-            existing_summary["areas_for_improvement"] = summary_result.areas_for_improvement
+            existing_summary["areas_for_improvement"] = (
+                summary_result.areas_for_improvement
+            )
             session_obj.summary = existing_summary
             db.add(session_obj)
             await db.commit()
@@ -601,8 +612,16 @@ async def post_chat_turn(
         {"sender": m.sender, "type": m.type, "content": m.content}
         for m in messages_list
     ] + [
-        {"sender": user_message.sender, "type": user_message.type, "content": user_message.content},
-        {"sender": feedback_message.sender, "type": feedback_message.type, "content": feedback_message.content},
+        {
+            "sender": user_message.sender,
+            "type": user_message.type,
+            "content": user_message.content,
+        },
+        {
+            "sender": feedback_message.sender,
+            "type": feedback_message.type,
+            "content": feedback_message.content,
+        },
     ]
 
     try:
@@ -654,13 +673,16 @@ async def post_chat_turn(
     summary="Send the user's message, store it, and return assistant response (redirect or evaluation feedback) in one call.",
 )
 async def post_send(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     body: SendReplyRequest = ...,
     db: AsyncSession = Depends(get_db),
 ):
-    session_obj, resume_entities, job_entities, messages_list = await _load_session_context(db, session_id)
+    session_obj, resume_entities, job_entities, messages_list = (
+        await _load_session_context(db, prep_session.id)
+    )
     if session_obj is None:
         raise HTTPException(status_code=404, detail="Prep session not found.")
+    session_id = prep_session.id
 
     last_question_content: Optional[str] = None
     for m in reversed(messages_list):
@@ -706,7 +728,11 @@ async def post_send(
             {"sender": m.sender, "type": m.type, "content": m.content}
             for m in messages_list
         ] + [
-            {"sender": user_message.sender, "type": user_message.type, "content": user_message.content},
+            {
+                "sender": user_message.sender,
+                "type": user_message.type,
+                "content": user_message.content,
+            },
         ]
         try:
             next_q_result = await generate_next_question(
@@ -843,7 +869,9 @@ async def post_send(
             )
             existing_summary: Dict[str, Any] = dict(session_obj.summary or {})
             existing_summary["strengths"] = summary_result.strengths
-            existing_summary["areas_for_improvement"] = summary_result.areas_for_improvement
+            existing_summary["areas_for_improvement"] = (
+                summary_result.areas_for_improvement
+            )
             session_obj.summary = existing_summary
             db.add(session_obj)
             await db.commit()
@@ -872,13 +900,16 @@ async def post_send(
     summary="Evaluate the candidate's answer (against the last question) and store feedback as a message.",
 )
 async def post_evaluate_answer(
-    session_id: uuid_pkg.UUID = Path(..., description="Preparation session ID."),
+    prep_session: PrepSession = Depends(get_own_prep_session),
     body: EvaluateAnswerRequest = ...,
     db: AsyncSession = Depends(get_db),
 ):
-    session_obj, resume_entities, job_entities, messages_list = await _load_session_context(db, session_id)
+    session_obj, resume_entities, job_entities, messages_list = (
+        await _load_session_context(db, prep_session.id)
+    )
     if session_obj is None:
         raise HTTPException(status_code=404, detail="Prep session not found.")
+    session_id = prep_session.id
 
     last_question_content: Optional[str] = None
     for m in reversed(messages_list):
@@ -1066,4 +1097,3 @@ async def post_evaluate_answer(
         message="Answer evaluated and feedback stored.",
         payload=payload,
     )
-
