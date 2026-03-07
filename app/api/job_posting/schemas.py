@@ -35,7 +35,7 @@ class JobPostingCreate(BaseModel):
 
     user_id: Optional[uuid_pkg.UUID] = Field(
         default=None,
-        description="User to associate this job posting with (nullable until auth is added).",
+        description="Ignored; owner is set from the authenticated user.",
     )
     entities: Dict[str, List[str]] = Field(
         ...,

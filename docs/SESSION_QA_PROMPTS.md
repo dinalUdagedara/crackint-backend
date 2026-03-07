@@ -102,13 +102,27 @@ Requested question type (or leave empty to choose): {question_type}
 
 ---
 
-## 2. Answer Evaluation
+## 2. Classify user message (redirect / next question / substantive)
 
-### 2.1 Purpose
+Before running full answer evaluation, the backend calls the LLM to classify the user message. All messages go through the LLM (no heuristic fast path).
+
+**Outcomes:**
+1. **SUBSTANTIVE_ANSWER** — User is answering the question (even if short or unsure). Caller runs full evaluation and then generates the next question.
+2. **NEXT_QUESTION** — User explicitly asks to skip (e.g. "next question", "move on", "skip", "let's move on"). Caller skips evaluation and immediately generates the next question (no redirect, no feedback).
+3. **Redirect** — Greeting, off-topic, "I don't know", "hint?", small talk. The LLM returns one short, warm sentence that gently brings the user back. Stored as FEEDBACK with `meta.redirect = "true"`; excluded from session summary and readiness.
+
+- **Function:** `classify_and_redirect(question, user_message)` returns `None` (substantive), `NEXT_QUESTION_SENTINEL`, or a redirect string.
+- **Prompt:** `REDIRECT_SYSTEM_PROMPT`; user content is last question + user message. Model replies with exactly one of: `SUBSTANTIVE_ANSWER`, `NEXT_QUESTION`, or one short redirect sentence. `DEFAULT_REDIRECT_MESSAGE` used as fallback when LLM fails.
+
+---
+
+## 3. Answer Evaluation
+
+### 3.1 Purpose
 
 Evaluate the candidate’s **answer** to an interview question and return structured feedback: text feedback, a numeric score (0–100), and dimension tags for analytics.
 
-### 2.2 Inputs
+### 4.2 Inputs
 
 | Input | Type | Description |
 |-------|------|--------------|
@@ -118,7 +132,7 @@ Evaluate the candidate’s **answer** to an interview question and return struct
 | `job_entities` | `Dict[str, List[str]]` | Job posting entities (for relevance to role). |
 | `resume_entities` | `Dict[str, List[str]]` | Resume entities (for relevance to candidate background). |
 
-### 2.3 Output Schema
+### 3.3 Output Schema
 
 The LLM must return **valid JSON** with:
 
@@ -138,7 +152,7 @@ The LLM must return **valid JSON** with:
 }
 ```
 
-### 2.4 Prompt Template
+### 3.4 Prompt Template
 
 **System prompt:**
 
@@ -173,7 +187,7 @@ Candidate background (for relevance):
 {resume_entities_json}
 ```
 
-### 2.5 Example
+### 3.5 Example
 
 **Inputs:**
 
@@ -195,13 +209,13 @@ Candidate background (for relevance):
 
 ---
 
-## 3. Session Summary (strengths / areas_for_improvement)
+## 4. Session Summary (strengths / areas_for_improvement)
 
-### 3.1 Purpose
+### 4.1 Purpose
 
 After each answer evaluation, the backend can call the LLM to synthesize all FEEDBACK messages in the session into a short session-level summary: **strengths** and **areas_for_improvement**. This summary is stored on `PrepSession.summary` and returned in `GET /api/v1/sessions/{id}` and `GET /api/v1/sessions/{id}/with-messages`.
 
-### 3.2 Inputs
+### 4.2 Inputs
 
 | Input | Type | Description |
 |-------|------|--------------|
@@ -210,7 +224,7 @@ After each answer evaluation, the backend can call the LLM to synthesize all FEE
 | `job_entities` | `Dict` (optional) | Job posting entities for context. |
 | `resume_entities` | `Dict` (optional) | Resume entities for context. |
 
-### 3.3 Output Schema
+### 4.3 Output Schema
 
 The LLM must return **valid JSON** with:
 
@@ -228,20 +242,20 @@ The LLM must return **valid JSON** with:
 }
 ```
 
-### 3.4 Prompt Template
+### 4.4 Prompt Template
 
 **System prompt:** See `SUMMARY_SYSTEM_PROMPT` in `app/agents/session_qa_agent.py` — instructs the model to synthesize feedback into strengths and areas_for_improvement, output JSON only.
 
 **User prompt:** Role level, recent feedback (text + tags), optional job/resume context.
 
-### 3.5 When It Runs
+### 4.5 When It Runs
 
 - Called from `post_evaluate_answer` after storing the new FEEDBACK message.
 - If the LLM call fails, `readiness_score` is still updated (average of scores); `summary` is left unchanged or set to empty.
 
 ---
 
-## 4. Implementation Notes
+## 5. Implementation Notes
 
 - **Parsing:** Services must parse LLM output as JSON. Handle malformed output (e.g. fallback score, generic feedback) and log errors.
 - **Token limits:** For long `previous_messages`, truncate or summarize (e.g. last N messages or last N questions only) to stay within model context. Session summary uses last N feedback items (`SUMMARY_MAX_FEEDBACK_ITEMS`).

@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     SESSION_QA_AGENT_MODEL: str = "gpt-4o-mini"
     SESSION_QA_AGENT_TEMPERATURE: float = 0.7
 
+    # JWT authentication
+    JWT_SECRET: str = "change-me-in-production-min-32-chars"
+
+    # Google OAuth (for POST /auth/google - verify ID token and create/link user)
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
     @property
     def DB_URL(self) -> str:
         """Async PostgreSQL URL for SQLAlchemy (asyncpg)."""

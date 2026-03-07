@@ -150,6 +150,109 @@ Requested question type (or leave empty to choose): {qtype_str}"""
         raise ValueError("Question generation failed.") from e
 
 
+# --- Greeting / off-topic / skip (ChatGPT-style, LLM-only) ---
+
+# Sentinel returned when the user asks to skip to the next question (caller generates next question).
+NEXT_QUESTION_SENTINEL = "__NEXT_QUESTION__"
+
+# Fallback when we want a redirect but LLM fails or returns junk
+DEFAULT_REDIRECT_MESSAGE = (
+    "I'm here to help you practice. When you're ready, answer the question above and I'll give you feedback."
+)
+
+REDIRECT_SYSTEM_PROMPT = """You are a warm, supportive interview-practice coach (like a friendly mentor). The user is in a live practice session with one question on the table.
+
+Your job — reply with exactly ONE of the following:
+
+1. SUBSTANTIVE_ANSWER — if the user is clearly giving a real answer to the interview question (even if short, unsure, or imperfect).
+
+2. NEXT_QUESTION — if the user clearly wants to skip to the next question (e.g. "next question", "move on", "skip", "I don't want to answer this", "let's move on", "next one please", "can we skip this one"). Use this when they are explicitly asking to advance, not when they are just saying they don't know (for that use a redirect).
+
+3. Otherwise (greeting, off-topic, "I don't know", "hint?", "can you repeat?", small talk, or not attempting an answer) — reply with ONE short, natural sentence that:
+   - Feels conversational and supportive (like ChatGPT)
+   - Gently brings them back to the question, or encourages them to try
+   - Does NOT sound robotic or formal
+
+Good redirect examples (vary your style):
+- "Hey! I'm here to help. When you're ready, just answer the question above and I'll give you feedback."
+- "No worries — take your time. Share your answer when you're ready and I'll give you feedback."
+- "That's okay! Give it your best shot when you can; I'll give you feedback and we can build from there."
+
+Rules:
+- Reply with ONLY one of: the exact text SUBSTANTIVE_ANSWER, the exact text NEXT_QUESTION, or one short redirect sentence. No preamble, no JSON, no quotation marks. Keep redirects to under 25 words."""
+
+
+def _normalize_redirect_response(raw: str) -> Optional[str]:
+    """Return a clean redirect message or None if it looks like SUBSTANTIVE_ANSWER, NEXT_QUESTION, or invalid."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    if "SUBSTANTIVE_ANSWER" in s.upper() or "NEXT_QUESTION" in s.upper():
+        return None
+    # Remove surrounding quotes if the model added them
+    for q in ('"', "'", "«", "»", "`"):
+        if s.startswith(q) and s.endswith(q) and len(s) > 1:
+            s = s[1:-1].strip()
+    # Cap length; if too long, use fallback
+    max_len = 280
+    if len(s) > max_len:
+        s = s[: max_len - 3].rstrip() + "..."
+    return s if s else None
+
+
+async def classify_and_redirect(question: str, user_message: str) -> Optional[str]:
+    """
+    Classify user message. Returns:
+    - None: substantive answer (caller should run full evaluation).
+    - NEXT_QUESTION_SENTINEL: user asked to skip to next question (caller should generate next question).
+    - str: redirect message for greeting/off-topic (caller should store as FEEDBACK with meta.redirect).
+    Raises ValueError if agent disabled/API key missing or LLM fails.
+    """
+    if not _is_session_qa_available():
+        raise ValueError(
+            "Session Q&A agent is disabled (SESSION_QA_AGENT_ENABLED=false or OPENAI_API_KEY unset)."
+        )
+
+    user_content = f"""Last question asked:
+{question}
+
+User message:
+{user_message}"""
+
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    except Exception as e:
+        logger.error("Session Q&A: could not create OpenAI client: %s", e)
+        raise ValueError("OpenAI client unavailable.") from e
+
+    model = getattr(settings, "SESSION_QA_AGENT_MODEL", "gpt-4o-mini")
+    temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
+
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": REDIRECT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.5,  # some variety in redirects, still stable
+        )
+        content = (response.choices[0].message.content or "").strip()
+        if "SUBSTANTIVE_ANSWER" in content.upper():
+            return None
+        if "NEXT_QUESTION" in content.upper():
+            return NEXT_QUESTION_SENTINEL
+        redirect = _normalize_redirect_response(content)
+        if redirect is None:
+            return None  # treat as substantive, run evaluation
+        return redirect
+    except Exception as e:
+        logger.warning("Session Q&A classify_and_redirect: LLM call failed: %s", e)
+        return None  # on failure, fall back to full evaluation
+
+
 # --- Answer evaluation ---
 
 EVAL_SYSTEM_PROMPT = """You are an expert technical interviewer evaluating a candidate's answer in a practice session.

@@ -18,7 +18,7 @@ class PrepSessionCreate(BaseModel):
 
     user_id: Optional[uuid_pkg.UUID] = Field(
         default=None,
-        description="User who owns the session (nullable until auth is added).",
+        description="Ignored; owner is set from the authenticated user.",
     )
     resume_id: Optional[uuid_pkg.UUID] = Field(
         default=None,
@@ -162,10 +162,15 @@ class EvaluateAnswerRequest(BaseModel):
 
 
 class EvaluateAnswerPayload(BaseModel):
-    """Payload returned after evaluating an answer."""
+    """Payload returned after evaluating an answer (or after a greeting/off-topic redirect)."""
 
-    feedback: str = Field(..., description="Text feedback for the candidate.")
-    score: int = Field(..., ge=0, le=100, description="Score 0-100.")
+    feedback: str = Field(..., description="Text feedback for the candidate, or redirect message.")
+    score: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Score 0-100; null when redirect=true (greeting/off-topic).",
+    )
     dimension_tags: List[str] = Field(
         default_factory=list,
         description="Tags such as technical, communication, structure.",
@@ -174,4 +179,75 @@ class EvaluateAnswerPayload(BaseModel):
         ...,
         description="ID of the stored Message (sender=ASSISTANT, type=FEEDBACK).",
     )
+    redirect: bool = Field(
+        default=False,
+        description="True when the user message was treated as greeting/off-topic and no score was applied.",
+    )
+
+
+# --- Single send (user reply in one call) ---
+
+
+class SendReplyRequest(BaseModel):
+    """Body for POST /sessions/{id}/send — user's reply in the session chat."""
+
+    content: str = Field(
+        ...,
+        min_length=1,
+        description="The user's message (answer or any text); backend stores it and returns redirect or evaluation feedback.",
+    )
+
+
+class SendReplyPayload(BaseModel):
+    """Payload returned from POST /sessions/{id}/send (unified for redirect and evaluation)."""
+
+    user_message_id: uuid_pkg.UUID = Field(
+        ...,
+        description="ID of the stored Message (sender=USER, type=ANSWER).",
+    )
+    feedback: str = Field(
+        ...,
+        description="Assistant text: redirect message or evaluation feedback.",
+    )
+    score: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="Score 0-100 when evaluation; null when redirect=True.",
+    )
+    dimension_tags: List[str] = Field(
+        default_factory=list,
+        description="Tags from evaluation; empty when redirect.",
+    )
+    message_id: uuid_pkg.UUID = Field(
+        ...,
+        description="ID of the stored Message (sender=ASSISTANT, type=FEEDBACK).",
+    )
+    redirect: bool = Field(
+        default=False,
+        description="True when the reply was treated as greeting/off-topic; no score applied.",
+    )
+
+
+# --- Unified chat endpoint (messages in, messages out) ---
+
+
+class ChatRequest(BaseModel):
+    """Body for POST /sessions/{id}/chat — unified chat turn."""
+
+    content: str = Field(
+        ...,
+        min_length=1,
+        description="The user's message for this turn (answer, greeting, or any text).",
+    )
+
+
+class ChatTurnPayload(BaseModel):
+    """Payload returned from POST /sessions/{id}/chat: all new messages created in this turn."""
+
+    new_messages: List[MessageRead] = Field(
+        ...,
+        description="Messages created by this chat turn (USER answer first, then ASSISTANT messages).",
+    )
+
 
