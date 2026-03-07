@@ -64,6 +64,20 @@ Use this doc when updating the frontend to work with the backend after auth and 
   ```
 - **Frontend**: Store `access_token` (e.g. in memory, localStorage, or secure storage). Send it on every request to protected endpoints.
 
+### 2b. Google login (optional)
+
+- **Endpoint**: `POST /api/v1/auth/google`
+- **Headers**: `Content-Type: application/json`
+- **Body**:
+  ```json
+  {
+    "id_token": "<Google OAuth ID token from frontend>"
+  }
+  ```
+- **Response**: Same as login — `200` with `payload`: `{ access_token, token_type: "bearer", user }`
+- **Use case**: After the user signs in with Google (e.g. via NextAuth), send the `id_token` from the OAuth account to obtain a backend JWT. Requires `GOOGLE_CLIENT_ID` in backend config (same as frontend OAuth client ID).
+- **Errors**: `401` if token invalid; `400` if Google account has no email; `503` if Google login is not configured.
+
 ### 3. Sending the token (protected endpoints)
 
 - **Header**: `Authorization: Bearer <access_token>`

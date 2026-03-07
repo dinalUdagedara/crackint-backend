@@ -21,6 +21,12 @@ class LoginRequest(BaseModel):
     password: str = Field(..., description="Plain password.")
 
 
+class GoogleTokenRequest(BaseModel):
+    """Body for Google login: Google OAuth ID token from the client."""
+
+    id_token: str = Field(..., description="Google OAuth ID token from the frontend.")
+
+
 class UserRead(BaseModel):
     """User payload returned in auth responses (no password)."""
 

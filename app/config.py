@@ -52,6 +52,9 @@ class Settings(BaseSettings):
 
     # JWT authentication
     JWT_SECRET: str = "change-me-in-production-min-32-chars"
+
+    # Google OAuth (for POST /auth/google - verify ID token and create/link user)
+    GOOGLE_CLIENT_ID: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
