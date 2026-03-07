@@ -69,6 +69,20 @@ class ResumeExtractResponse(BaseModel):
     )
 
 
+class ResumeScoreResponse(BaseModel):
+    """Payload returned from CV scoring (POST /score or GET /{resume_id}/score)."""
+
+    score: float = Field(..., ge=0, le=100, description="Overall CV strength score (0-100).")
+    breakdown: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Scores per dimension: content, structure, clarity.",
+    )
+    suggestions: List[str] = Field(
+        default_factory=list,
+        description="Actionable improvement suggestions.",
+    )
+
+
 class ResumeExtractPreviewResponse(BaseModel):
     """Payload for preview endpoint: text passed to the model and resulting entities (no DB write)."""
 
