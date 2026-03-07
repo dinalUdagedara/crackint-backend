@@ -27,11 +27,13 @@ from app.api.resume.schemas import (
     ResumeExtractPreviewResponse,
     ResumeExtractResponse,
     ResumeListItem,
+    ResumeScoreResponse,
 )
 from app.api.resume import service as resume_service
 from app.common.http_response_model import CommonResponse, PageMeta
 from app.config import settings
 from app.models import Resume, User
+from app.services.cv_scoring import score_cv_from_file, score_cv_from_raw_text
 from app.services.text_extraction import SUPPORTED_FILE_CONTENT_TYPES
 
 router = APIRouter()
@@ -112,6 +114,96 @@ async def get_resume(
         success=True,
         message="Resume retrieved successfully",
         payload=ResumeListItem.model_validate(resume),
+    )
+
+
+@router.post(
+    "/score",
+    response_model=CommonResponse[ResumeScoreResponse],
+    name="Score CV from file",
+    summary="Score a CV by uploading PDF or image. Pass directly to LLM vision model.",
+)
+async def post_resume_score(
+    file: UploadFile = File(..., description="Resume PDF or image (PNG, JPEG, WebP)"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Upload a CV file (PDF or image). The file is passed directly to the LLM vision model
+    for holistic analysis. Returns score (0-100), breakdown, and suggestions.
+    Requires CV_SCORING_ENABLED=true and OPENAI_API_KEY.
+    """
+    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
+        )
+    content = await file.read()
+    if len(content) > MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
+        )
+    content_type = file.content_type or "application/octet-stream"
+    try:
+        result = await score_cv_from_file(content, content_type)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    payload = ResumeScoreResponse(
+        score=result.score,
+        breakdown=result.breakdown,
+        suggestions=result.suggestions,
+    )
+    return CommonResponse(
+        success=True,
+        message="CV scored successfully",
+        payload=payload,
+    )
+
+
+@router.get(
+    "/{resume_id}/score",
+    response_model=CommonResponse[ResumeScoreResponse],
+    name="Score resume by ID",
+    summary="Score an existing resume using its stored raw text.",
+)
+async def get_resume_score(
+    resume_id: uuid_pkg.UUID = Path(..., description="Resume ID."),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Score an existing resume. Uses the stored raw_text (no file). Best results come from
+    POST /score with file upload. Requires CV_SCORING_ENABLED=true and OPENAI_API_KEY.
+    """
+    resume = await session.get(Resume, resume_id)
+    if resume is None or resume.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Resume not found.")
+    if not (resume.raw_text or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Resume has no text to analyze. Use POST /score with file upload instead.",
+        )
+    text_len = len((resume.raw_text or "").strip())
+    text_preview = (resume.raw_text or "").strip()[:80].replace("\n", " ")
+    logger.info(
+        "CV score: resume_id=%s, raw_text_len=%d, preview=%s...",
+        resume_id,
+        text_len,
+        text_preview,
+    )
+    try:
+        result = await score_cv_from_raw_text(resume.raw_text)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    payload = ResumeScoreResponse(
+        score=result.score,
+        breakdown=result.breakdown,
+        suggestions=result.suggestions,
+    )
+    return CommonResponse(
+        success=True,
+        message="CV scored successfully",
+        payload=payload,
     )
 
 

@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     SESSION_QA_AGENT_MODEL: str = "gpt-4o-mini"
     SESSION_QA_AGENT_TEMPERATURE: float = 0.7
 
+    # CV scoring agent: LLM-based CV strength analysis (PDF/image or text)
+    CV_SCORING_ENABLED: bool = False
+    CV_SCORING_MODEL: str = "gpt-4o-mini"
+
     # JWT authentication
     JWT_SECRET: str = "change-me-in-production-min-32-chars"
 

@@ -34,9 +34,29 @@ List responses include **`meta`** with `page`, `page_size`, `total_pages`, `tota
 | GET | `/resumes` | List all resumes (paginated, optional user filter) |
 | GET | `/resumes/{resume_id}` | Get a single resume by ID |
 | POST | `/resumes/extract` | Create a resume: upload PDF or paste text, extract entities, persist |
+| POST | `/resumes/score` | Score a CV from file upload (PDF/image); passes to LLM vision model |
+| GET | `/resumes/{resume_id}/score` | Score an existing resume using stored raw text |
 | PUT | `/resumes/{resume_id}` | Update a resume: new PDF or text, re-extract, update record |
 | PATCH | `/resumes/{resume_id}` | Update only selected entity fields (user-editable extracted data) |
 | DELETE | `/resumes` | Delete all resumes |
+
+### POST `/resumes/score` — Score CV from file
+
+**Requires:** `CV_SCORING_ENABLED=true` and `OPENAI_API_KEY`. Otherwise returns `503`.
+
+**Body:** `multipart/form-data` with `file` (PDF or image: PNG, JPEG, WebP).
+
+**Response payload:** `score` (0–100), `breakdown` (content, structure, clarity), `suggestions` (list of strings).
+
+**Errors:** `400` invalid file type/size. `503` if CV scoring disabled or LLM unavailable.
+
+### GET `/resumes/{resume_id}/score` — Score existing resume
+
+**Requires:** `CV_SCORING_ENABLED=true` and `OPENAI_API_KEY`. Uses stored `raw_text` (no vision).
+
+**Response payload:** Same as POST `/resumes/score`.
+
+**Errors:** `404` resume not found. `400` if resume has no raw text. `503` if CV scoring disabled.
 
 ### GET `/resumes` — List all resumes
 
@@ -195,6 +215,36 @@ No parameters or body.
 **Response payload:** `feedback`, `score` (0–100), `dimension_tags`, `message_id` (the stored ASSISTANT FEEDBACK message).
 
 **Errors:** `400` if no question in session. `404` session not found. `503` if agent disabled or LLM unavailable.
+
+---
+
+## Match (skill-gap)
+
+| Method | Path | Summary |
+|--------|------|--------|
+| POST | `/match/skill-gap` | Compare resume vs job posting; return gaps, suggestions, alerts |
+
+### POST `/match/skill-gap`
+
+**Body:** `{ "resume_id": "uuid", "job_posting_id": "uuid" }`
+
+**Response payload:** `missing_skills`, `weak_experience`, `weak_education`, `suggestions`, `severity` (low|medium|high), `alerts` (array of `{ type, message, severity }`).
+
+**Errors:** `404` if resume or job posting not found or not owned by current user.
+
+---
+
+## Users
+
+| Method | Path | Summary |
+|--------|------|--------|
+| GET | `/users/me/readiness` | Combined readiness (CV score + session avg + gap penalty) |
+
+### GET `/users/me/readiness`
+
+**Query parameters:** `resume_id` (optional), `job_posting_id` (optional). If both provided, CV score and gap analysis are included.
+
+**Response payload:** `combined_score`, `cv_score`, `session_avg`, `gap_severity`, `trend`.
 
 ---
 
