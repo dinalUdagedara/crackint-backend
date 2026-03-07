@@ -54,3 +54,24 @@ class JobPostingCreate(BaseModel):
         description="Optional job or interview deadline.",
     )
 
+
+class JobPostingUpdate(BaseModel):
+    """Body for PATCH: update only the fields you send. Omitted keys are left unchanged."""
+
+    entities: Optional[Dict[str, List[str]]] = Field(
+        default=None,
+        description="Entity keys to merge into existing entities. Replaces only provided keys.",
+    )
+    raw_text: Optional[str] = Field(
+        default=None,
+        description="Raw job description text.",
+    )
+    location: Optional[str] = Field(
+        default=None,
+        description="Normalized location string.",
+    )
+    deadline: Optional[datetime] = Field(
+        default=None,
+        description="Job or interview deadline.",
+    )
+
