@@ -124,7 +124,7 @@ Prep sessions represent a **chat-based interview prep run** (user + resume + job
   "user_id": "uuid-or-null",
   "resume_id": "uuid-or-null",
   "job_posting_id": "uuid-or-null",
-  "mode": "TARGETED"  // or "QUICK_PRACTICE"
+  "mode": "TARGETED"  // or "QUICK_PRACTICE" or "TUTOR_CHAT"
 }
 ```
 

@@ -51,6 +51,20 @@ class PrepSessionSummary(BaseModel):
     )
 
 
+class PrepSessionUpdate(BaseModel):
+    """Body to update an existing preparation session."""
+
+    title: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description="New title for the session.",
+    )
+    mode: Optional[SessionMode] = Field(
+        default=None,
+        description="New mode for the session.",
+    )
+
+
 class PrepSessionRead(BaseModel):
     """Session record as returned in list/get responses (without messages by default)."""
 
