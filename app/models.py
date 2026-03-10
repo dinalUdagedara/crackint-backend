@@ -177,3 +177,47 @@ class Message(UUIDModel, TimestampModel, table=True):
         ),
         description="Optional metadata such as scores, categories, etc.",
     )
+
+
+class CoverLetter(UUIDModel, TimestampModel, table=True):
+    """Cover letter table: stores generated cover letters per user + resume + job posting."""
+
+    __tablename__ = "cover_letters"
+
+    user_id: uuid_pkg.UUID = Field(
+        foreign_key="users.id",
+        nullable=False,
+        index=True,
+    )
+    resume_id: Optional[uuid_pkg.UUID] = Field(
+        default=None,
+        foreign_key="resumes.id",
+        nullable=True,
+        index=True,
+    )
+    job_posting_id: Optional[uuid_pkg.UUID] = Field(
+        default=None,
+        foreign_key="job_postings.id",
+        nullable=True,
+        index=True,
+    )
+    session_id: Optional[uuid_pkg.UUID] = Field(
+        default=None,
+        foreign_key="prep_sessions.id",
+        nullable=True,
+        index=True,
+    )
+    content: str = Field(
+        nullable=False,
+        description="Latest generated (or edited) cover letter text.",
+    )
+    meta: Dict[str, Optional[str]] = Field(
+        default_factory=dict,
+        sa_column=Column(
+            "metadata",
+            JSONB,
+            nullable=False,
+            server_default=text("'{}'::jsonb"),
+        ),
+        description="Metadata such as model, temperature, tone, language, etc.",
+    )

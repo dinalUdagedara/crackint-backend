@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     CV_SCORING_ENABLED: bool = False
     CV_SCORING_MODEL: str = "gpt-4o-mini"
 
+    # Cover letter agent: LLM-based cover letter generation
+    COVER_LETTER_AGENT_ENABLED: bool = True
+    COVER_LETTER_AGENT_MODEL: str = "gpt-4o-mini"
+    COVER_LETTER_AGENT_TEMPERATURE: float = 0.7
+
     # JWT authentication
     JWT_SECRET: str = "change-me-in-production-min-32-chars"
 

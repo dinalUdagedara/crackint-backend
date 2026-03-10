@@ -42,4 +42,5 @@ class MessageType(str, Enum):
     QUESTION = "QUESTION"
     ANSWER = "ANSWER"
     FEEDBACK = "FEEDBACK"
+    COVER_LETTER = "COVER_LETTER"
 
