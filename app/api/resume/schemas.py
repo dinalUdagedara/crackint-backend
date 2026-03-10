@@ -28,6 +28,12 @@ class DeleteAllResumesResponse(BaseModel):
     deleted_count: int = Field(..., description="Number of resumes deleted.")
 
 
+class DeleteResumeResponse(BaseModel):
+    """Payload returned after deleting a single resume."""
+
+    deleted: bool = Field(..., description="Whether the resume was deleted.")
+
+
 # Entity types allowed for resume entities (used by PATCH entities endpoint).
 RESUME_ENTITY_TYPES = frozenset({"NAME", "EMAIL", "SKILL", "OCCUPATION", "EDUCATION", "EXPERIENCE"})
 

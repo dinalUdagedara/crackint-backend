@@ -12,6 +12,7 @@ from app.api.job_posting.route import router as job_posting_router
 from app.api.session.route import router as session_router
 from app.api.match.route import router as match_router
 from app.api.users.route import router as users_router
+from app.api.stt.route import router as stt_router
 
 api_router = APIRouter()
 
@@ -23,3 +24,4 @@ api_router.include_router(job_posting_router, prefix="/job-postings", tags=["job
 api_router.include_router(session_router, prefix="/sessions", tags=["sessions"])
 api_router.include_router(match_router, prefix="/match", tags=["match"])
 api_router.include_router(users_router, prefix="/users", tags=["users"])
+api_router.include_router(stt_router, prefix="/stt", tags=["stt"])

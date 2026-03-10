@@ -55,6 +55,12 @@ class JobPostingCreate(BaseModel):
     )
 
 
+class DeleteJobPostingResponse(BaseModel):
+    """Payload returned after deleting a single job posting."""
+
+    deleted: bool = Field(..., description="Whether the job posting was deleted.")
+
+
 class JobPostingUpdate(BaseModel):
     """Body for PATCH: update only the fields you send. Omitted keys are left unchanged."""
 

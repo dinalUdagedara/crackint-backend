@@ -14,6 +14,7 @@ from app.common.http_response_model import CommonResponse
 from app.config import settings
 from app.ml.resume_ner import load_model as load_resume_ner
 from app.ml.job_poster_ner import load_model as load_job_poster_ner
+from app.ws.ws_manager import create_sio_app
 
 
 @asynccontextmanager
@@ -75,4 +76,5 @@ def get_app() -> FastAPI:
             ).model_dump(),
         )
 
-    return app
+    # Wrap FastAPI with Socket.IO
+    return create_sio_app(app)
