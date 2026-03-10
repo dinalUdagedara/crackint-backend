@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.api.job_posting.schemas import (
+    DeleteJobPostingResponse,
     JobPostingCreate,
     JobPostingListItem,
     JobPostingUpdate,
@@ -130,6 +131,32 @@ async def create_job_posting(
         success=True,
         message="Job posting created successfully",
         payload=JobPostingListItem.model_validate(record),
+    )
+
+
+@router.delete(
+    "/{job_posting_id}",
+    response_model=CommonResponse[DeleteJobPostingResponse],
+    name="Delete job posting by ID",
+    summary="Delete a single job posting by ID.",
+)
+async def delete_job_posting(
+    job_posting_id: uuid_pkg.UUID = Path(..., description="Job posting ID to delete."),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Deletes the job posting if it belongs to the current user. Returns 404 if not found or not owned.
+    """
+    row = await session.get(JobPosting, job_posting_id)
+    if row is None or row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Job posting not found.")
+    await session.delete(row)
+    await session.commit()
+    return CommonResponse(
+        success=True,
+        message="Job posting deleted successfully",
+        payload=DeleteJobPostingResponse(deleted=True),
     )
 
 

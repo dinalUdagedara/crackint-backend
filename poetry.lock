@@ -21,6 +21,21 @@ typing-extensions = ">=4.12"
 tz = ["tzdata"]
 
 [[package]]
+name = "amazon-transcribe"
+version = "0.6.4"
+description = "Async Python SDK for Amazon Transcribe Streaming"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "amazon_transcribe-0.6.4-py3-none-any.whl", hash = "sha256:ba5a27616106e659f031c975da12c331665d122d2518e2018a88b308e66fdee7"},
+    {file = "amazon_transcribe-0.6.4.tar.gz", hash = "sha256:89770100e88446a451241f49ad14820bf3113f4545df0a32e82c73455928432c"},
+]
+
+[package.dependencies]
+awscrt = ">=0.26.1,<0.27.0"
+
+[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 description = "Document parameters, class attributes, return types, and variables inline, with Annotated."
@@ -134,6 +149,59 @@ files = [
 gssauth = ["gssapi ; platform_system != \"Windows\"", "sspilib ; platform_system == \"Windows\""]
 
 [[package]]
+name = "awscrt"
+version = "0.26.1"
+description = "A common runtime for AWS Python projects"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "awscrt-0.26.1-cp310-cp310-macosx_10_15_universal2.whl", hash = "sha256:b855d2e1005791c8c872443fac6a40f6fbaa951bbb8b30ce6a28c8e7e2839663"},
+    {file = "awscrt-0.26.1-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:00c763732eb4cb2375a4909b2cfb5d777a146b134e8b250a3fc72059ece045f5"},
+    {file = "awscrt-0.26.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:58ce23efa8b4ce6138c719058365da8de06e6ecb330747ac43366ff46f9536a4"},
+    {file = "awscrt-0.26.1-cp310-cp310-musllinux_1_1_aarch64.whl", hash = "sha256:42aaf7562ea16f12415e76d92296919d0b165dd7e6c52dee8309db5d03a1ca77"},
+    {file = "awscrt-0.26.1-cp310-cp310-musllinux_1_1_x86_64.whl", hash = "sha256:8663c0c0930f7df0944a68befb8d159d08b35f13ec70dd155a6f0f14a7e73122"},
+    {file = "awscrt-0.26.1-cp310-cp310-win32.whl", hash = "sha256:6fdb4054c2a99065056b3f3641a1ca000544addde68d8814c66d874ca40e22bd"},
+    {file = "awscrt-0.26.1-cp310-cp310-win_amd64.whl", hash = "sha256:d4353ce63fbe46b137d0e8fba9761457ca555990e3a31f55d1f8c97d9d078334"},
+    {file = "awscrt-0.26.1-cp311-abi3-macosx_10_15_universal2.whl", hash = "sha256:02ec2045ae8bb2ed3dcf5a820b14903c7a34f1e9278d810a6a210f761fe69cd9"},
+    {file = "awscrt-0.26.1-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:15e0d0a3ce2ba5de0830e790c1270944c372f5f3e70facfebb14d3968a467e69"},
+    {file = "awscrt-0.26.1-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1a24016bd4b37cf493ac1099330c460f6366e28c364e2e5e9ff8234065fde504"},
+    {file = "awscrt-0.26.1-cp311-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:a928c3bfa8a886d65a2bd2bb05f0d98ff6e7d9af5058b5d0cfc8f0a7081bb8e2"},
+    {file = "awscrt-0.26.1-cp311-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:d6cee25700381929220b8ddb1757a08017f7538fd06a4720cfc92ac22da41c20"},
+    {file = "awscrt-0.26.1-cp311-abi3-win32.whl", hash = "sha256:48e86ef8083425eab55b76cd9056dc0d7816c9939008d44f2aeffa0dfe707103"},
+    {file = "awscrt-0.26.1-cp311-abi3-win_amd64.whl", hash = "sha256:0c456b55c61bb6ba51e9cef49402f4fdf2a1b9ccf41addd00c6ec69d7b8f501f"},
+    {file = "awscrt-0.26.1-cp313-abi3-macosx_10_15_universal2.whl", hash = "sha256:3f05e1fbbd834f44e5654f58a411f138fcedf3671edcfcd64795ed2a3ee74432"},
+    {file = "awscrt-0.26.1-cp313-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d11db081a059ac198a2628a49e6acc3f18c75bf08a83090308241ba17e7b290b"},
+    {file = "awscrt-0.26.1-cp313-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0e0b8fb0ac48a0178ab7d1bc8ea33862103bfae1f740afcb7c24e9a88116bec7"},
+    {file = "awscrt-0.26.1-cp313-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:76ec9f19d43766f64a2210807583cf9f48a72ca8e215199ca7dcc1cf17cf77fe"},
+    {file = "awscrt-0.26.1-cp313-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:507fa4106d1bbf6b5fbb1c4d287eb832a0459a361eb7f5aa5e5272f15f3e9077"},
+    {file = "awscrt-0.26.1-cp313-abi3-win32.whl", hash = "sha256:1ebf5078d1281cfe51cd9ed7f324cb25d58404540c1be0d8794e48a033b01dca"},
+    {file = "awscrt-0.26.1-cp313-abi3-win_amd64.whl", hash = "sha256:6fbffffee0333f8ae54ed12958c492b37e1803e6c27e6a2fff8f56851f748c45"},
+    {file = "awscrt-0.26.1-cp38-cp38-macosx_10_15_x86_64.whl", hash = "sha256:a9a1dfb42be1d373980bb1b5585bf84d3be7436dec4451b1db613ee7da5837fa"},
+    {file = "awscrt-0.26.1-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:66eb4785f1bc8095c827c8e512b17d48cfe34e7be200219250cd5e1890d6e998"},
+    {file = "awscrt-0.26.1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5e7ac8227f6b40d3e5431849dc1683b9fd773138a3cc6510a9bc2842d44a7a66"},
+    {file = "awscrt-0.26.1-cp38-cp38-manylinux_2_5_i686.manylinux1_i686.whl", hash = "sha256:8124633483be3fae4203f6dcee3ec1ea65aad8bba9540d53e6627e32f7b456b1"},
+    {file = "awscrt-0.26.1-cp38-cp38-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:cf39e35481ede83b284ef0495016fb5cf8ef010a966b55ea7151a8f3c51480b6"},
+    {file = "awscrt-0.26.1-cp38-cp38-musllinux_1_1_aarch64.whl", hash = "sha256:4e58715b17cfb136b7a22a9e2c9bc358847c3c702dc24181276328eddb09dbfe"},
+    {file = "awscrt-0.26.1-cp38-cp38-musllinux_1_1_x86_64.whl", hash = "sha256:1f3ee4f2894b7886c427c4bc3fd968c82e57047b35d964da1a5c1c98569cf686"},
+    {file = "awscrt-0.26.1-cp38-cp38-win32.whl", hash = "sha256:aab84ce41eac48eae80ce32ec42356b13f1fbfe46616132ebfad369830382a23"},
+    {file = "awscrt-0.26.1-cp38-cp38-win_amd64.whl", hash = "sha256:f5330b1a1523fa708be5a92b0b8612708c8661c6ad5ca58a9f946cdfb9a1a817"},
+    {file = "awscrt-0.26.1-cp39-cp39-macosx_10_15_universal2.whl", hash = "sha256:38182a965c464198471df7e3f21ce3ab8297e7cb87da4de3064349c1487dd52a"},
+    {file = "awscrt-0.26.1-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:43a766208f2c8fb0dda918e3d19238ff85d15a958c331f82140997f5feba3c47"},
+    {file = "awscrt-0.26.1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7e436774fb1ad3bfc0e075d516debb9344d5b2f5f29a6304f4be2707cf1bcb92"},
+    {file = "awscrt-0.26.1-cp39-cp39-manylinux_2_5_i686.manylinux1_i686.whl", hash = "sha256:1764b7ba9b8d9d1de5c7ad7193c4fd2624331af7fc5e414846537790819cb66e"},
+    {file = "awscrt-0.26.1-cp39-cp39-manylinux_2_5_x86_64.manylinux1_x86_64.whl", hash = "sha256:e7c4c9feb582b749c46fa40ad1414042174b7bfa387ce91ac6893a78167a350c"},
+    {file = "awscrt-0.26.1-cp39-cp39-musllinux_1_1_aarch64.whl", hash = "sha256:b817cdc5719a160ca0a4e6c9713e75498d3b15a6ea180b9bbc3c80916391617f"},
+    {file = "awscrt-0.26.1-cp39-cp39-musllinux_1_1_x86_64.whl", hash = "sha256:47a194d0cca741896130440ca198374a9a413e5cfb5f7bc9c65716e1ef20a978"},
+    {file = "awscrt-0.26.1-cp39-cp39-win32.whl", hash = "sha256:618e94e774f241068722fd49a5f432f1476a4fb064dce970dffb4b0930a6b4dc"},
+    {file = "awscrt-0.26.1-cp39-cp39-win_amd64.whl", hash = "sha256:44d5dfe2a9b4598adb2c096f293abc208025446e2be5652e6dfb6bb5decd3a3f"},
+    {file = "awscrt-0.26.1.tar.gz", hash = "sha256:a8d63a7dcc6484c5c1675b31a8d1b6726c3dc85b13796fb143dfb0072260935e"},
+]
+
+[package.extras]
+dev = ["autopep8 (>=2.3.1)", "build (>=1.2.2)", "sphinx (>=7.2.6,<7.3) ; python_version >= \"3.9\"", "websockets (>=13.1)"]
+
+[[package]]
 name = "bcrypt"
 version = "5.0.0"
 description = "Modern password hashing for your software and your servers"
@@ -232,6 +300,58 @@ chardet = ["chardet"]
 charset-normalizer = ["charset-normalizer"]
 html5lib = ["html5lib"]
 lxml = ["lxml"]
+
+[[package]]
+name = "bidict"
+version = "0.23.1"
+description = "The bidirectional mapping library for Python."
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "bidict-0.23.1-py3-none-any.whl", hash = "sha256:5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5"},
+    {file = "bidict-0.23.1.tar.gz", hash = "sha256:03069d763bc387bbd20e7d49914e75fc4132a41937fa3405417e1a5a2d006d71"},
+]
+
+[[package]]
+name = "boto3"
+version = "1.42.63"
+description = "The AWS SDK for Python"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "boto3-1.42.63-py3-none-any.whl", hash = "sha256:d502a89a0acc701692ae020d15981f2a82e9eb3485acc651cfd0cf1a3afe79ee"},
+    {file = "boto3-1.42.63.tar.gz", hash = "sha256:cd008cfd0d7ea30f1c5e22daf0998c55b7c6c68cb68eea05110e33fe641173d5"},
+]
+
+[package.dependencies]
+botocore = ">=1.42.63,<1.43.0"
+jmespath = ">=0.7.1,<2.0.0"
+s3transfer = ">=0.16.0,<0.17.0"
+
+[package.extras]
+crt = ["botocore[crt] (>=1.21.0,<2.0a0)"]
+
+[[package]]
+name = "botocore"
+version = "1.42.63"
+description = "Low-level, data-driven core of boto 3."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "botocore-1.42.63-py3-none-any.whl", hash = "sha256:83f39d04f2b316bdfc59a3cac2d12238bde7126ac99d9a57d910dbd86d58c528"},
+    {file = "botocore-1.42.63.tar.gz", hash = "sha256:1fdfc33cff58d21e8622cf620ba2bba3cff324557932aaf935b5374e4610f059"},
+]
+
+[package.dependencies]
+jmespath = ">=0.7.1,<2.0.0"
+python-dateutil = ">=2.1,<3.0.0"
+urllib3 = {version = ">=1.25.4,<2.2.0 || >2.2.0,<3", markers = "python_version >= \"3.10\""}
+
+[package.extras]
+crt = ["awscrt (==0.31.2)"]
 
 [[package]]
 name = "certifi"
@@ -1212,6 +1332,18 @@ files = [
     {file = "jiter-0.13.0-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ab44b178f7981fcaea7e0a5df20e773c663d06ffda0198f1a524e91b2fde7e59"},
     {file = "jiter-0.13.0-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7bb00b6d26db67a05fe3e12c76edc75f32077fb51deed13822dc648fa373bc19"},
     {file = "jiter-0.13.0.tar.gz", hash = "sha256:f2839f9c2c7e2dffc1bc5929a510e14ce0a946be9365fd1219e7ef342dae14f4"},
+]
+
+[[package]]
+name = "jmespath"
+version = "1.1.0"
+description = "JSON Matching Expressions"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "jmespath-1.1.0-py3-none-any.whl", hash = "sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64"},
+    {file = "jmespath-1.1.0.tar.gz", hash = "sha256:472c87d80f36026ae83c6ddd0f1d05d4e510134ed462851fd5f754c8c3cbb88d"},
 ]
 
 [[package]]
@@ -2265,6 +2397,21 @@ docs = ["sphinx (>=5.3)", "sphinx-rtd-theme (>=1.0)"]
 testing = ["coverage (>=6.2)", "hypothesis (>=5.7.1)"]
 
 [[package]]
+name = "python-dateutil"
+version = "2.9.0.post0"
+description = "Extensions to the standard Python datetime module"
+optional = false
+python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
+groups = ["main"]
+files = [
+    {file = "python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3"},
+    {file = "python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"},
+]
+
+[package.dependencies]
+six = ">=1.5"
+
+[[package]]
 name = "python-dotenv"
 version = "1.2.1"
 description = "Read key-value pairs from a .env file and set them as environment variables"
@@ -2278,6 +2425,27 @@ files = [
 
 [package.extras]
 cli = ["click (>=5.0)"]
+
+[[package]]
+name = "python-engineio"
+version = "4.13.1"
+description = "Engine.IO server and client for Python"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "python_engineio-4.13.1-py3-none-any.whl", hash = "sha256:f32ad10589859c11053ad7d9bb3c9695cdf862113bfb0d20bc4d890198287399"},
+    {file = "python_engineio-4.13.1.tar.gz", hash = "sha256:0a853fcef52f5b345425d8c2b921ac85023a04dfcf75d7b74696c61e940fd066"},
+]
+
+[package.dependencies]
+simple-websocket = ">=0.10.0"
+
+[package.extras]
+asyncio-client = ["aiohttp (>=3.11)"]
+client = ["requests (>=2.21.0)", "websocket-client (>=0.54.0)"]
+dev = ["tox"]
+docs = ["furo", "sphinx"]
 
 [[package]]
 name = "python-jose"
@@ -2314,6 +2482,28 @@ files = [
     {file = "python_multipart-0.0.22-py3-none-any.whl", hash = "sha256:2b2cd894c83d21bf49d702499531c7bafd057d730c201782048f7945d82de155"},
     {file = "python_multipart-0.0.22.tar.gz", hash = "sha256:7340bef99a7e0032613f56dc36027b959fd3b30a787ed62d310e951f7c3a3a58"},
 ]
+
+[[package]]
+name = "python-socketio"
+version = "5.16.1"
+description = "Socket.IO server and client for Python"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+files = [
+    {file = "python_socketio-5.16.1-py3-none-any.whl", hash = "sha256:a3eb1702e92aa2f2b5d3ba00261b61f062cce51f1cfb6900bf3ab4d1934d2d35"},
+    {file = "python_socketio-5.16.1.tar.gz", hash = "sha256:f863f98eacce81ceea2e742f6388e10ca3cdd0764be21d30d5196470edf5ea89"},
+]
+
+[package.dependencies]
+bidict = ">=0.21.0"
+python-engineio = ">=4.11.0"
+
+[package.extras]
+asyncio-client = ["aiohttp (>=3.4)"]
+client = ["requests (>=2.21.0)", "websocket-client (>=0.54.0)"]
+dev = ["tox"]
+docs = ["furo", "sphinx"]
 
 [[package]]
 name = "pytorch-crf"
@@ -2590,6 +2780,24 @@ files = [
 pyasn1 = ">=0.1.3"
 
 [[package]]
+name = "s3transfer"
+version = "0.16.0"
+description = "An Amazon S3 Transfer Manager"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "s3transfer-0.16.0-py3-none-any.whl", hash = "sha256:18e25d66fed509e3868dc1572b3f427ff947dd2c56f844a5bf09481ad3f3b2fe"},
+    {file = "s3transfer-0.16.0.tar.gz", hash = "sha256:8e990f13268025792229cd52fa10cb7163744bf56e719e0b9cb925ab79abf920"},
+]
+
+[package.dependencies]
+botocore = ">=1.37.4,<2.0a.0"
+
+[package.extras]
+crt = ["botocore[crt] (>=1.37.4,<2.0a.0)"]
+
+[[package]]
 name = "safetensors"
 version = "0.7.0"
 description = ""
@@ -2748,6 +2956,25 @@ files = [
     {file = "shellingham-1.5.4-py2.py3-none-any.whl", hash = "sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686"},
     {file = "shellingham-1.5.4.tar.gz", hash = "sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de"},
 ]
+
+[[package]]
+name = "simple-websocket"
+version = "1.1.0"
+description = "Simple WebSocket server and client for Python"
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "simple_websocket-1.1.0-py3-none-any.whl", hash = "sha256:4af6069630a38ed6c561010f0e11a5bc0d4ca569b36306eb257cd9a192497c8c"},
+    {file = "simple_websocket-1.1.0.tar.gz", hash = "sha256:7939234e7aa067c534abdab3a9ed933ec9ce4691b0713c78acb195560aa52ae4"},
+]
+
+[package.dependencies]
+wsproto = "*"
+
+[package.extras]
+dev = ["flake8", "pytest", "pytest-cov", "tox"]
+docs = ["sphinx"]
 
 [[package]]
 name = "six"
@@ -3232,7 +3459,7 @@ version = "2.6.3"
 description = "HTTP library with thread-safe connection pooling, file post, and more."
 optional = false
 python-versions = ">=3.9"
-groups = ["download"]
+groups = ["main", "download"]
 files = [
     {file = "urllib3-2.6.3-py3-none-any.whl", hash = "sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4"},
     {file = "urllib3-2.6.3.tar.gz", hash = "sha256:1b62b6884944a57dbe321509ab94fd4d3b307075e0c2eae991ac71ee15ad38ed"},
@@ -3615,7 +3842,22 @@ files = [
 [package.extras]
 dev = ["pytest", "setuptools"]
 
+[[package]]
+name = "wsproto"
+version = "1.3.2"
+description = "Pure-Python WebSocket protocol implementation"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "wsproto-1.3.2-py3-none-any.whl", hash = "sha256:61eea322cdf56e8cc904bd3ad7573359a242ba65688716b0710a5eb12beab584"},
+    {file = "wsproto-1.3.2.tar.gz", hash = "sha256:b86885dcf294e15204919950f666e06ffc6c7c114ca900b060d6e16293528294"},
+]
+
+[package.dependencies]
+h11 = ">=0.16.0,<1"
+
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "078bbf06eb2854ee7f16cdb523a31b4ba471cb8158b08f00dcb2924bf75a9126"
+content-hash = "5f50a71196fd140e4271c907b3a7d38e3f37603529b04e6847cc32d540be991f"

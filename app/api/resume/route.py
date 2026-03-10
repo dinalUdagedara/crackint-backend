@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user, get_db
 from app.api.resume.schemas import (
     DeleteAllResumesResponse,
+    DeleteResumeResponse,
     ResumeEntitiesUpdate,
     ResumeExtractPreviewResponse,
     ResumeExtractResponse,
@@ -496,6 +497,32 @@ async def patch_resume_entities(
         success=True,
         message="Resume entities updated successfully",
         payload=ResumeListItem.model_validate(resume),
+    )
+
+
+@router.delete(
+    "/{resume_id}",
+    response_model=CommonResponse[DeleteResumeResponse],
+    name="Delete resume by ID",
+    summary="Delete a single resume by ID.",
+)
+async def delete_resume(
+    resume_id: uuid_pkg.UUID = Path(..., description="Resume ID to delete."),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Deletes the resume if it belongs to the current user. Returns 404 if not found or not owned.
+    """
+    resume = await session.get(Resume, resume_id)
+    if resume is None or resume.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Resume not found.")
+    await session.delete(resume)
+    await session.commit()
+    return CommonResponse(
+        success=True,
+        message="Resume deleted successfully",
+        payload=DeleteResumeResponse(deleted=True),
     )
 
 

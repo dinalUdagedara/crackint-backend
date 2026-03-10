@@ -29,6 +29,9 @@ passlib = { extras = ["bcrypt"], version = ">=1.7.4" }
 openai = ">=1.0.0"
 pillow = ">=10.0.0"
 pytesseract = ">=0.3.10"
+python-socketio = "^5.16.1"
+boto3 = "^1.42.63"
+amazon-transcribe = "^0.6.4"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

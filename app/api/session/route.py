@@ -16,6 +16,7 @@ from app.agents.session_qa_agent import (
     generate_next_question,
     summarize_session_feedback,
     generate_session_title,
+    generate_tutor_chat_reply,
 )
 from app.api.deps import get_current_user, get_db
 from app.api.session.schemas import (
@@ -29,13 +30,14 @@ from app.api.session.schemas import (
     NextQuestionRequest,
     PrepSessionCreate,
     PrepSessionRead,
+    PrepSessionUpdate,
     PrepSessionWithMessages,
     SendReplyPayload,
     SendReplyRequest,
 )
 from app.common.http_response_model import CommonResponse
 from app.models import JobPosting, Message, PrepSession, Resume, User
-from app.schemas.common import RoleLevel, SenderType
+from app.schemas.common import RoleLevel, SenderType, SessionMode
 
 router = APIRouter()
 
@@ -147,6 +149,40 @@ async def get_prep_session(
     return CommonResponse(
         success=True,
         message="Prep session retrieved successfully",
+        payload=PrepSessionRead(**payload_dict),
+    )
+
+
+@router.patch(
+    "/{session_id}",
+    response_model=CommonResponse[PrepSessionRead],
+    name="Update prep session",
+    summary="Update a prep session (e.g. title or mode).",
+)
+async def update_prep_session(
+    body: PrepSessionUpdate,
+    prep_session: PrepSession = Depends(get_own_prep_session),
+    db: AsyncSession = Depends(get_db),
+):
+    if body.title is not None:
+        summary_dict = dict(prep_session.summary or {})
+        summary_dict["title"] = body.title
+        prep_session.summary = summary_dict
+
+    if body.mode is not None:
+        prep_session.mode = body.mode.value
+
+    db.add(prep_session)
+    await db.commit()
+    await db.refresh(prep_session)
+
+    readiness_score = await _compute_readiness_from_feedback(db, prep_session.id)
+    payload_dict = PrepSessionRead.model_validate(prep_session).model_dump()
+    payload_dict["readiness_score"] = readiness_score
+
+    return CommonResponse(
+        success=True,
+        message="Prep session updated successfully",
         payload=PrepSessionRead(**payload_dict),
     )
 
@@ -393,6 +429,47 @@ async def post_chat_turn(
     await db.refresh(user_message)
 
     new_messages: List[MessageRead] = [MessageRead.model_validate(user_message)]
+
+    # Case: Conversational Tutor Mode
+    if session_obj.mode == SessionMode.TUTOR_CHAT.value:
+        role_level = RoleLevel.ASE.value
+        previous_messages: List[Dict[str, Any]] = [
+            {"sender": m.sender, "type": m.type, "content": m.content}
+            for m in messages_list
+        ]
+        
+        try:
+            tutor_reply = await generate_tutor_chat_reply(
+                role_level=role_level,
+                job_entities=job_entities,
+                resume_entities=resume_entities,
+                previous_messages=previous_messages,
+                user_message=body.content,
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=str(e),
+            ) from e
+
+        assistant_message = Message(
+            session_id=session_id,
+            sender=SenderType.ASSISTANT.value,
+            type="FEEDBACK",
+            content=tutor_reply,
+            meta={"redirect": "true"},
+        )
+        db.add(assistant_message)
+        await db.commit()
+        await db.refresh(assistant_message)
+
+        new_messages.append(MessageRead.model_validate(assistant_message))
+
+        return CommonResponse(
+            success=True,
+            message="Chat turn processed: tutor reply generated.",
+            payload=ChatTurnPayload(new_messages=new_messages),
+        )
 
     # Case A: no QUESTION yet -> start interview by asking the first question
     if not last_question_content:

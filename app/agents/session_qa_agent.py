@@ -593,3 +593,81 @@ Return a single JSON object with key "title" containing a short, human-friendly 
         logger.warning("Session Q&A title: LLM call failed: %s", e)
         raise ValueError("Session title generation failed.") from e
 
+
+# --- Conversational Tutor Mode ---
+
+TUTOR_CHAT_SYSTEM_PROMPT = """You are an expert career coach and interview tutor. Your goal is to have a natural, helpful conversation with the user.
+
+Context you will receive:
+- Role level: INTERN, ASE, SSE, or OTHER.
+- Job posting entities (if any): job title, company, required skills, etc.
+- Candidate resume entities (if any): skills, occupation, education, experience.
+
+Rules:
+- Act as a friendly, knowledgeable tutor helping the candidate prepare for interviews or improve their career skills.
+- Read the conversation history to understand the user's current context and questions.
+- If the user asks for hints, interview tips, or feedback on their resume, provide constructive, detailed advice.
+- Do not generate interview questions unless the user explicitly asks for one.
+- Keep your answers helpful, concise, and professional but conversational.
+- Respond with a single string containing your reply. Do not use JSON."""
+
+
+async def generate_tutor_chat_reply(
+    role_level: str,
+    job_entities: Dict[str, List[str]],
+    resume_entities: Dict[str, List[str]],
+    previous_messages: List[Dict[str, Any]],
+    user_message: str,
+) -> str:
+    """
+    Call LLM to generate a conversational tutor response based on the chat history.
+    """
+    if not _is_session_qa_available():
+        raise ValueError(
+            "Session Q&A agent is disabled (SESSION_QA_AGENT_ENABLED=false or OPENAI_API_KEY unset)."
+        )
+
+    job_json = json.dumps(job_entities, ensure_ascii=False, indent=2)
+    resume_json = json.dumps(resume_entities, ensure_ascii=False, indent=2)
+    
+    system_content = f"{TUTOR_CHAT_SYSTEM_PROMPT}\n\nContext:\nRole level: {role_level}\n\nJob posting:\n{job_json}\n\nResume:\n{resume_json}"
+
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
+    
+    # Add previous messages
+    for msg in previous_messages[-30:]:  # Limit history to last 30 messages
+        role = "user" if msg.get("sender") == "USER" else "assistant"
+        content = msg.get("content", "")
+        if content:
+            messages.append({"role": role, "content": content})
+            
+    # Add current user message
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    except Exception as e:
+        logger.error("Session Q&A: could not create OpenAI client: %s", e)
+        raise ValueError("OpenAI client unavailable.") from e
+
+    model = getattr(settings, "SESSION_QA_AGENT_MODEL", "gpt-4o-mini")
+    temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
+
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        if not content:
+            raise ValueError("LLM returned empty content.")
+            
+        return content
+    except Exception as e:
+        if isinstance(e, ValueError):
+            raise
+        logger.warning("Session Q&A tutor chat: LLM call failed: %s", e)
+        raise ValueError("Tutor chat generation failed.") from e
+

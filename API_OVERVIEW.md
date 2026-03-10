@@ -186,7 +186,7 @@ No parameters or body.
 
 | Method | Path | Summary |
 |--------|------|--------|
-| POST | `/sessions` | Create a prep session (user_id, resume_id, job_posting_id, mode) |
+| POST | `/sessions` | Create a prep session (user_id, resume_id, job_posting_id, mode: TARGETED/QUICK_PRACTICE/TUTOR_CHAT) |
 | GET | `/sessions` | List prep sessions |
 | GET | `/sessions/{session_id}` | Get session by ID (no messages) |
 | DELETE | `/sessions/{session_id}` | Delete session by ID (messages deleted via cascade) |

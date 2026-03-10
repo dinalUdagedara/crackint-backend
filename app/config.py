@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
+    # AWS
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_DEFAULT_REGION: str = "us-east-1"
+
     @property
     def DB_URL(self) -> str:
         """Async PostgreSQL URL for SQLAlchemy (asyncpg)."""
