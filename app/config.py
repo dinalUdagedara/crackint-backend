@@ -39,6 +39,39 @@ class Settings(BaseSettings):
     # Upload limits for resume/job PDFs (MB)
     MAX_UPLOAD_SIZE_MB: int = 10
 
+    # Resume entity AI agent (optional validation/correction after NER)
+    RESUME_ENTITY_AGENT_ENABLED: bool = False
+    # Job entity AI agent (optional validation/correction after NER)
+    JOB_ENTITY_AGENT_ENABLED: bool = False
+    OPENAI_API_KEY: Optional[str] = None
+
+    # Session Q&A agent: question generation + answer evaluation (interview prep chat)
+    SESSION_QA_AGENT_ENABLED: bool = False
+    SESSION_QA_AGENT_MODEL: str = "gpt-4o-mini"
+    SESSION_QA_AGENT_TEMPERATURE: float = 0.7
+
+    # CV scoring agent: LLM-based CV strength analysis (PDF/image or text)
+    CV_SCORING_ENABLED: bool = False
+    CV_SCORING_MODEL: str = "gpt-4o-mini"
+
+    # Cover letter agent: LLM-based cover letter generation
+    COVER_LETTER_AGENT_ENABLED: bool = True
+    COVER_LETTER_AGENT_MODEL: str = "gpt-4o-mini"
+    COVER_LETTER_AGENT_TEMPERATURE: float = 0.7
+
+    # JWT authentication
+    JWT_SECRET: str = "change-me-in-production-min-32-chars"
+
+    # Google OAuth (for POST /auth/google - verify ID token and create/link user)
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
+    # AWS
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_DEFAULT_REGION: str = "us-east-1"
+
     @property
     def DB_URL(self) -> str:
         """Async PostgreSQL URL for SQLAlchemy (asyncpg)."""

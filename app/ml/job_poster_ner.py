@@ -82,6 +82,7 @@ def load_model() -> None:
     if not load_dir or not Path(load_dir).exists():
         _tokenizer = _model = _device = _id2label = None
         _num_labels = 0
+        print("Job poster NER: no load dir or path missing; /jobs/extract will return empty entities.")
         return
 
     config_path = Path(load_dir) / "ner_config.json"
@@ -89,6 +90,7 @@ def load_model() -> None:
     if not config_path.exists() or not state_path.exists():
         _tokenizer = _model = _device = _id2label = None
         _num_labels = 0
+        print("Job poster NER: config or state file missing; /jobs/extract will return empty entities.")
         return
 
     with open(config_path, "r", encoding="utf-8") as f:
@@ -117,6 +119,7 @@ def load_model() -> None:
     ).to(_device)
     _model.load_state_dict(torch.load(state_path, map_location=_device))
     _model.eval()
+    print(f"Job poster NER: loaded from {load_dir} (num_labels={num_labels})")
 
 
 def _clean_entity(s: str) -> str:

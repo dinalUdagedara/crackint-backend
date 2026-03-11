@@ -42,6 +42,7 @@ log
 # ML model artifacts (large binaries — store separately, never in Git)
 model/
 models/
+model-old/
 *.pt
 *.pth
 *.bin

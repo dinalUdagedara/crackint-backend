@@ -28,6 +28,12 @@ class DeleteAllResumesResponse(BaseModel):
     deleted_count: int = Field(..., description="Number of resumes deleted.")
 
 
+class DeleteResumeResponse(BaseModel):
+    """Payload returned after deleting a single resume."""
+
+    deleted: bool = Field(..., description="Whether the resume was deleted.")
+
+
 # Entity types allowed for resume entities (used by PATCH entities endpoint).
 RESUME_ENTITY_TYPES = frozenset({"NAME", "EMAIL", "SKILL", "OCCUPATION", "EDUCATION", "EXPERIENCE"})
 
@@ -66,4 +72,31 @@ class ResumeExtractResponse(BaseModel):
     raw_text: str | None = Field(
         default=None,
         description="Raw text used for extraction (if client sent file). Omitted if client sent text.",
+    )
+
+
+class ResumeScoreResponse(BaseModel):
+    """Payload returned from CV scoring (POST /score or GET /{resume_id}/score)."""
+
+    score: float = Field(..., ge=0, le=100, description="Overall CV strength score (0-100).")
+    breakdown: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Scores per dimension: content, structure, clarity.",
+    )
+    suggestions: List[str] = Field(
+        default_factory=list,
+        description="Actionable improvement suggestions.",
+    )
+
+
+class ResumeExtractPreviewResponse(BaseModel):
+    """Payload for preview endpoint: text passed to the model and resulting entities (no DB write)."""
+
+    extracted_text: str = Field(
+        ...,
+        description="Exact text passed to the NER model (from PDF extraction or raw input). Use to monitor/debug input.",
+    )
+    entities: Dict[str, List[str]] = Field(
+        ...,
+        description="Entities extracted by the model from extracted_text.",
     )

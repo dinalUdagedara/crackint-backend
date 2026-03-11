@@ -2,24 +2,45 @@
 Resume upload, entity extraction, and update endpoints.
 """
 
-from typing import Optional
+import logging
 import uuid as uuid_pkg
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Path,
+    Query,
+    UploadFile,
+)
+
+logger = logging.getLogger(__name__)
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
-from app.api.resume.schemas import DeleteAllResumesResponse, ResumeEntitiesUpdate, ResumeExtractResponse, ResumeListItem
+from app.api.deps import get_current_user, get_db
+from app.api.resume.schemas import (
+    DeleteAllResumesResponse,
+    DeleteResumeResponse,
+    ResumeEntitiesUpdate,
+    ResumeExtractPreviewResponse,
+    ResumeExtractResponse,
+    ResumeListItem,
+    ResumeScoreResponse,
+)
 from app.api.resume import service as resume_service
 from app.common.http_response_model import CommonResponse, PageMeta
 from app.config import settings
-from app.models import Resume
+from app.models import Resume, User
+from app.services.cv_scoring import score_cv_from_file, score_cv_from_raw_text
+from app.services.text_extraction import SUPPORTED_FILE_CONTENT_TYPES
 
 router = APIRouter()
 
 MAX_BYTES = (settings.MAX_UPLOAD_SIZE_MB or 10) * 1024 * 1024
-ALLOWED_CONTENT_TYPES = {"application/pdf"}
+ALLOWED_CONTENT_TYPES = SUPPORTED_FILE_CONTENT_TYPES
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
@@ -28,35 +49,45 @@ MAX_PAGE_SIZE = 100
     "",
     response_model=CommonResponse[list[ResumeListItem]],
     name="List all resumes",
-    summary="List resumes with optional user filter and pagination.",
+    summary="List the current user's resumes with pagination.",
 )
 async def list_resumes(
-    user_id: Optional[uuid_pkg.UUID] = Query(default=None, description="Filter by user ID."),
     page: int = Query(1, ge=1, description="Page number (1-based)."),
-    page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page."),
+    page_size: int = Query(
+        DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE, description="Items per page."
+    ),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """
-    Returns a paginated list of resumes. Optionally filter by **user_id**.
+    Returns a paginated list of resumes for the authenticated user.
     """
-    # Count total
-    count_q = select(func.count()).select_from(Resume)
-    if user_id is not None:
-        count_q = count_q.where(Resume.user_id == user_id)
+    # Count total for current user
+    count_q = (
+        select(func.count())
+        .select_from(Resume)
+        .where(Resume.user_id == current_user.id)
+    )
     total_result = await session.execute(count_q)
     total_items = total_result.scalar_one() or 0
     total_pages = max(1, (total_items + page_size - 1) // page_size)
 
     # Fetch page
     offset = (page - 1) * page_size
-    q = select(Resume).order_by(Resume.updated_at.desc()).offset(offset).limit(page_size)
-    if user_id is not None:
-        q = q.where(Resume.user_id == user_id)
+    q = (
+        select(Resume)
+        .where(Resume.user_id == current_user.id)
+        .order_by(Resume.updated_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
     result = await session.execute(q)
     resumes = list(result.scalars().all())
 
     payload = [ResumeListItem.model_validate(r) for r in resumes]
-    meta = PageMeta(page=page, page_size=page_size, total_pages=total_pages, total_items=total_items)
+    meta = PageMeta(
+        page=page, page_size=page_size, total_pages=total_pages, total_items=total_items
+    )
     return CommonResponse(
         success=True,
         message="Resumes retrieved successfully",
@@ -73,16 +104,185 @@ async def list_resumes(
 )
 async def get_resume(
     resume_id: uuid_pkg.UUID = Path(..., description="Resume ID."),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    """Returns the resume record if found; 404 otherwise."""
+    """Returns the resume record if found and owned by the current user; 404 otherwise."""
     resume = await session.get(Resume, resume_id)
-    if resume is None:
+    if resume is None or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found.")
     return CommonResponse(
         success=True,
         message="Resume retrieved successfully",
         payload=ResumeListItem.model_validate(resume),
+    )
+
+
+@router.post(
+    "/score",
+    response_model=CommonResponse[ResumeScoreResponse],
+    name="Score CV from file",
+    summary="Score a CV by uploading PDF or image. Pass directly to LLM vision model.",
+)
+async def post_resume_score(
+    file: UploadFile = File(..., description="Resume PDF or image (PNG, JPEG, WebP)"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Upload a CV file (PDF or image). The file is passed directly to the LLM vision model
+    for holistic analysis. Returns score (0-100), breakdown, and suggestions.
+    Requires CV_SCORING_ENABLED=true and OPENAI_API_KEY.
+    """
+    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
+        )
+    content = await file.read()
+    if len(content) > MAX_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
+        )
+    content_type = file.content_type or "application/octet-stream"
+    try:
+        result = await score_cv_from_file(content, content_type)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    payload = ResumeScoreResponse(
+        score=result.score,
+        breakdown=result.breakdown,
+        suggestions=result.suggestions,
+    )
+    return CommonResponse(
+        success=True,
+        message="CV scored successfully",
+        payload=payload,
+    )
+
+
+@router.get(
+    "/{resume_id}/score",
+    response_model=CommonResponse[ResumeScoreResponse],
+    name="Score resume by ID",
+    summary="Score an existing resume using its stored raw text.",
+)
+async def get_resume_score(
+    resume_id: uuid_pkg.UUID = Path(..., description="Resume ID."),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Score an existing resume. Uses the stored raw_text (no file). Best results come from
+    POST /score with file upload. Requires CV_SCORING_ENABLED=true and OPENAI_API_KEY.
+    """
+    resume = await session.get(Resume, resume_id)
+    if resume is None or resume.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Resume not found.")
+    if not (resume.raw_text or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Resume has no text to analyze. Use POST /score with file upload instead.",
+        )
+    text_len = len((resume.raw_text or "").strip())
+    text_preview = (resume.raw_text or "").strip()[:80].replace("\n", " ")
+    logger.info(
+        "CV score: resume_id=%s, raw_text_len=%d, preview=%s...",
+        resume_id,
+        text_len,
+        text_preview,
+    )
+    try:
+        result = await score_cv_from_raw_text(resume.raw_text)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    payload = ResumeScoreResponse(
+        score=result.score,
+        breakdown=result.breakdown,
+        suggestions=result.suggestions,
+    )
+    return CommonResponse(
+        success=True,
+        message="CV scored successfully",
+        payload=payload,
+    )
+
+
+@router.post(
+    "/preview-extract",
+    response_model=CommonResponse[ResumeExtractPreviewResponse],
+    name="Preview extracted text and entities",
+    summary="Return the text passed to the NER model and extracted entities (no DB save). Use to monitor PDF extraction and model input.",
+)
+async def preview_resume_extract(
+    file: UploadFile | None = File(default=None, description="Resume PDF file"),
+    text: str | None = Form(
+        default=None, description="Raw resume text (use when not uploading a file)"
+    ),
+    validate: bool = Query(
+        default=False,
+        description="If true, run AI agent to validate and correct entities (requires RESUME_ENTITY_AGENT_ENABLED and OPENAI_API_KEY).",
+    ),
+):
+    """
+    Accept either **file** (PDF) or **text**. Returns:
+    - **extracted_text**: The exact string passed to the NER model (from PDF or your text).
+    - **entities**: Entities extracted by the model.
+
+    Does **not** save to the database. Use this to debug or monitor what the model receives.
+    """
+    logger.info(
+        "Resume preview-extract: validate=%s, has_file=%s, has_text=%s",
+        validate,
+        file is not None,
+        text is not None and bool(text and text.strip()),
+    )
+    if file is not None and text is not None:
+        logger.warning("Resume preview-extract: 400 - client sent both file and text")
+        raise HTTPException(
+            status_code=400, detail="Send either a file or text, not both."
+        )
+    if file is None and (text is None or not text.strip()):
+        logger.warning("Resume preview-extract: 400 - neither file nor text provided")
+        raise HTTPException(
+            status_code=400,
+            detail="Send either a file (PDF or image) or form field 'text' with resume content.",
+        )
+
+    if file is not None:
+        if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
+            )
+        content = await file.read()
+        if len(content) > MAX_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
+            )
+        content_type = file.content_type or "application/octet-stream"
+        raw_text, entities = await resume_service.extract_entities_from_file_bytes(
+            content, content_type, run_agent=validate
+        )
+        payload = ResumeExtractPreviewResponse(
+            extracted_text=raw_text, entities=entities
+        )
+        logger.info("Resume preview-extract: done (file, text_len=%d)", len(raw_text))
+    else:
+        text_clean = text.strip()
+        entities = await resume_service.extract_entities_from_text(
+            text_clean, run_agent=validate
+        )
+        payload = ResumeExtractPreviewResponse(
+            extracted_text=text_clean, entities=entities
+        )
+        logger.info("Resume preview-extract: done (text, len=%d)", len(text_clean))
+
+    return CommonResponse(
+        success=True,
+        message="Preview: text passed to model and extracted entities",
+        payload=payload,
     )
 
 
@@ -94,8 +294,14 @@ async def get_resume(
 )
 async def extract_resume_entities(
     file: UploadFile | None = File(default=None, description="Resume PDF file"),
-    text: str | None = Form(default=None, description="Raw resume text (use when not uploading a file)"),
-    user_id: Optional[uuid_pkg.UUID] = Query(default=None, description="Optional user ID to associate this resume with (for testing until auth is added)."),
+    text: str | None = Form(
+        default=None, description="Raw resume text (use when not uploading a file)"
+    ),
+    validate: bool = Query(
+        default=False,
+        description="If true, run AI agent to validate and correct entities (requires RESUME_ENTITY_AGENT_ENABLED and OPENAI_API_KEY).",
+    ),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """
@@ -105,45 +311,68 @@ async def extract_resume_entities(
 
     Returns extracted entities: NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE.
     """
+    logger.info(
+        "Resume extract: validate=%s, has_file=%s, has_text=%s",
+        validate,
+        file is not None,
+        text is not None and bool(text and text.strip()),
+    )
     if file is not None and text is not None:
+        logger.warning("Resume extract: 400 - client sent both file and text")
         raise HTTPException(
             status_code=400,
             detail="Send either a file or text, not both.",
         )
     if file is None and (text is None or not text.strip()):
+        logger.warning("Resume extract: 400 - neither file nor text provided")
         raise HTTPException(
             status_code=400,
-            detail="Send either a file (PDF) or form field 'text' with resume content.",
+            detail="Send either a file (PDF or image) or form field 'text' with resume content.",
         )
 
     if file is not None:
         if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+            logger.warning(
+                "Resume extract: 400 - invalid content type %s", file.content_type
+            )
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF files are accepted. Use content-type application/pdf.",
+                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
+            logger.warning(
+                "Resume extract: 400 - file too large (%d bytes)", len(content)
+            )
             raise HTTPException(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content)
+        content_type = file.content_type or "application/octet-stream"
+        raw_text, entities = await resume_service.extract_entities_from_file_bytes(
+            content, content_type, run_agent=validate
+        )
         payload = ResumeExtractResponse(entities=entities, raw_text=raw_text)
     else:
         text_clean = text.strip()
-        entities = await resume_service.extract_entities_from_text(text_clean)
-        payload = ResumeExtractResponse(entities=entities, raw_text=None)
+        entities = await resume_service.extract_entities_from_text(
+            text_clean, run_agent=validate
+        )
+        payload = ResumeExtractResponse(entities=entities, raw_text=text_clean)
 
-    # Persist to DB (user_id nullable until auth is added)
     resume = Resume(
-        user_id=user_id,
+        user_id=current_user.id,
         entities=payload.entities,
         raw_text=payload.raw_text,
     )
     session.add(resume)
     await session.commit()
     await session.refresh(resume)
+    logger.info(
+        "Resume extract: done (resume_id=%s, persisted), validate=%s",
+        resume.id,
+        validate,
+    )
 
     return CommonResponse(
         success=True,
@@ -161,13 +390,27 @@ async def extract_resume_entities(
 async def update_resume(
     resume_id: uuid_pkg.UUID = Path(..., description="Resume ID to update"),
     file: UploadFile | None = File(default=None, description="New resume PDF file"),
-    text: str | None = Form(default=None, description="New raw resume text (use when not uploading a file)"),
+    text: str | None = Form(
+        default=None, description="New raw resume text (use when not uploading a file)"
+    ),
+    validate: bool = Query(
+        default=False,
+        description="If true, run AI agent to validate and correct entities (requires RESUME_ENTITY_AGENT_ENABLED and OPENAI_API_KEY).",
+    ),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """
     Accept either **file** (PDF) or **text**. Re-runs extraction and updates the resume record.
     Returns the new extracted entities and raw_text. Use when the user confirms "Replace resume".
     """
+    logger.info(
+        "Resume update: resume_id=%s, validate=%s, has_file=%s, has_text=%s",
+        resume_id,
+        validate,
+        file is not None,
+        text is not None and bool(text and text.strip()),
+    )
     if file is not None and text is not None:
         raise HTTPException(
             status_code=400,
@@ -180,14 +423,14 @@ async def update_resume(
         )
 
     resume = await session.get(Resume, resume_id)
-    if resume is None:
+    if resume is None or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found.")
 
     if file is not None:
         if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF files are accepted. Use content-type application/pdf.",
+                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -195,14 +438,19 @@ async def update_resume(
                 status_code=400,
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
-        raw_text, entities = await resume_service.extract_entities_from_pdf_bytes(content)
+        content_type = file.content_type or "application/octet-stream"
+        raw_text, entities = await resume_service.extract_entities_from_file_bytes(
+            content, content_type, run_agent=validate
+        )
         resume.entities = entities
         resume.raw_text = raw_text
     else:
         text_clean = text.strip()
-        entities = await resume_service.extract_entities_from_text(text_clean)
+        entities = await resume_service.extract_entities_from_text(
+            text_clean, run_agent=validate
+        )
         resume.entities = entities
-        resume.raw_text = None
+        resume.raw_text = text_clean
 
     await session.commit()
     await session.refresh(resume)
@@ -224,6 +472,7 @@ async def update_resume(
 async def patch_resume_entities(
     resume_id: uuid_pkg.UUID = Path(..., description="Resume ID to update."),
     body: ResumeEntitiesUpdate = ...,
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """
@@ -232,7 +481,7 @@ async def patch_resume_entities(
     Values replace the existing list for that key; omitted keys are not modified.
     """
     resume = await session.get(Resume, resume_id)
-    if resume is None:
+    if resume is None or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found.")
 
     # Merge: only update keys present in body
@@ -252,21 +501,51 @@ async def patch_resume_entities(
 
 
 @router.delete(
-    "",
-    response_model=CommonResponse[DeleteAllResumesResponse],
-    name="Delete all resumes",
-    summary="Delete all resume records.",
+    "/{resume_id}",
+    response_model=CommonResponse[DeleteResumeResponse],
+    name="Delete resume by ID",
+    summary="Delete a single resume by ID.",
 )
-async def delete_all_resumes(
+async def delete_resume(
+    resume_id: uuid_pkg.UUID = Path(..., description="Resume ID to delete."),
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """
-    Deletes every resume in the database. Use with caution.
-    Returns the number of resumes deleted.
+    Deletes the resume if it belongs to the current user. Returns 404 if not found or not owned.
     """
-    count_result = await session.execute(select(func.count()).select_from(Resume))
+    resume = await session.get(Resume, resume_id)
+    if resume is None or resume.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Resume not found.")
+    await session.delete(resume)
+    await session.commit()
+    return CommonResponse(
+        success=True,
+        message="Resume deleted successfully",
+        payload=DeleteResumeResponse(deleted=True),
+    )
+
+
+@router.delete(
+    "",
+    response_model=CommonResponse[DeleteAllResumesResponse],
+    name="Delete all resumes",
+    summary="Delete all of the current user's resume records.",
+)
+async def delete_all_resumes(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Deletes every resume belonging to the current user. Returns the number deleted.
+    """
+    count_result = await session.execute(
+        select(func.count())
+        .select_from(Resume)
+        .where(Resume.user_id == current_user.id)
+    )
     deleted_count = count_result.scalar_one() or 0
-    await session.execute(delete(Resume))
+    await session.execute(delete(Resume).where(Resume.user_id == current_user.id))
     await session.commit()
     return CommonResponse(
         success=True,

@@ -11,20 +11,36 @@ fastapi = ">=0.115.0"
 uvicorn = { extras = ["standard"], version = ">=0.32.0" }
 python-multipart = ">=0.0.9"
 pydantic = ">=2.0.0"
+email-validator = ">=2.0.0"
 pydantic-settings = ">=2.0.0"
 pymupdf = ">=1.24.0"
 torch = ">=2.0.0"
 transformers = ">=4.30.0"
 pytorch-crf = ">=0.7.2"
+gensim = ">=4.0.0"
 sqlalchemy = { extras = ["asyncio"], version = ">=2.0.0" }
 sqlmodel = ">=0.0.14"
 asyncpg = ">=0.29.0"
 alembic = ">=1.13.0"
 psycopg2-binary = ">=2.9.0"
+python-jose = { extras = ["cryptography"], version = ">=3.3.0" }
+google-auth = ">=2.0.0"
+passlib = { extras = ["bcrypt"], version = ">=1.7.4" }
+openai = ">=1.0.0"
+pillow = ">=10.0.0"
+pytesseract = ">=0.3.10"
+python-socketio = "^5.16.1"
+boto3 = "^1.42.63"
+amazon-transcribe = "^0.6.4"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
 pytest-asyncio = "^0.24.0"
+httpx = ">=0.23.0"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.poetry.group.download.dependencies]
 huggingface_hub = ">=0.20.0"
