@@ -307,10 +307,10 @@ async def get_readiness_tracker_items(
                 label = _job_label_from_entities(job.entities)
                 title = f"Readiness for {label} is {score:.0f}%" if score is not None else f"Readiness for {label} — no score yet"
             else:
-                label = session_title or "Session"
+                label = session_title or "Practice session"
                 title = f"Readiness: {label} — {score:.0f}%" if score is not None else f"Readiness: {label}"
         else:
-            label = session_title or "Session"
+            label = session_title or "Practice session"
             title = f"Readiness: {label} — {score:.0f}%" if score is not None else f"Readiness: {label}"
 
         item = {
