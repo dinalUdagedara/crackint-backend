@@ -200,7 +200,7 @@ No parameters or body.
 
 **Requires:** `SESSION_QA_AGENT_ENABLED=true` and `OPENAI_API_KEY` set. Otherwise returns `503`.
 
-**Body (optional):** `{ "question_type": "technical" | "behavioral" | "system_design", "role_level": "INTERN" | "ASE" | "SSE" | "OTHER" }`. Default `role_level` is ASE.
+**Body (optional):** `{ "question_type": "technical" | "behavioral" | "system_design", "role_level": "INTERN" | "ASE" | "SSE" | "OTHER", "prefer_difficulty": "easy" | "medium" | "hard" }`. Default `role_level` is ASE. If `prefer_difficulty` is set, the next question prefers that difficulty; otherwise the session difficulty curve is used.
 
 **Response payload:** `question`, `difficulty`, `question_type`, `message_id` (the stored ASSISTANT QUESTION message).
 
@@ -210,7 +210,7 @@ No parameters or body.
 
 **Requires:** Session Q&A agent enabled. Evaluates against the **last QUESTION** message in the session.
 
-**Body:** `{ "answer": "candidate's answer text" }`.
+**Body:** `{ "answer": "candidate's answer text", "prefer_difficulty": "easy" | "medium" | "hard" (optional) }`. When the user skips and a next question is returned, `prefer_difficulty` can override the session curve.
 
 **Response payload:** `feedback`, `score` (0–100), `dimension_tags`, `message_id` (the stored ASSISTANT FEEDBACK message).
 

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.common import MessageType, RoleLevel, SenderType, SessionMode, SessionStatus
 
 QuestionTypeLiteral = Literal["technical", "behavioral", "system_design"]
+DifficultyLiteral = Literal["easy", "medium", "hard"]
 
 
 class PrepSessionCreate(BaseModel):
@@ -145,6 +146,10 @@ class NextQuestionRequest(BaseModel):
         default=RoleLevel.ASE,
         description="Candidate level for question difficulty (default: ASE).",
     )
+    prefer_difficulty: Optional[DifficultyLiteral] = Field(
+        default=None,
+        description="Override difficulty for this question: easy, medium, or hard. If omitted, backend uses the session difficulty curve.",
+    )
 
 
 class NextQuestionPayload(BaseModel):
@@ -172,6 +177,10 @@ class EvaluateAnswerRequest(BaseModel):
         ...,
         min_length=1,
         description="The candidate's answer text to evaluate.",
+    )
+    prefer_difficulty: Optional[DifficultyLiteral] = Field(
+        default=None,
+        description="When user skips and a next question is returned, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
     )
 
 
@@ -209,6 +218,10 @@ class SendReplyRequest(BaseModel):
         ...,
         min_length=1,
         description="The user's message (answer or any text); backend stores it and returns redirect or evaluation feedback.",
+    )
+    prefer_difficulty: Optional[DifficultyLiteral] = Field(
+        default=None,
+        description="When a next question is generated, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
     )
 
 
@@ -253,6 +266,10 @@ class ChatRequest(BaseModel):
         ...,
         min_length=1,
         description="The user's message for this turn (answer, greeting, or any text).",
+    )
+    prefer_difficulty: Optional[DifficultyLiteral] = Field(
+        default=None,
+        description="When a next question is generated this turn, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
     )
 
 

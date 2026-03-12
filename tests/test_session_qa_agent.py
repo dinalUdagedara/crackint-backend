@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from app.agents.session_qa_agent import (
     _is_session_qa_available,
     generate_next_question,
+    get_suggested_difficulty,
     evaluate_answer,
     summarize_session_feedback,
     QuestionGenerationResult,
@@ -37,6 +38,23 @@ class TestSessionQAAvailability:
         mock_settings.SESSION_QA_AGENT_ENABLED = True
         mock_settings.OPENAI_API_KEY = "sk-fake"
         assert _is_session_qa_available() is True
+
+
+class TestGetSuggestedDifficulty:
+    """Test get_suggested_difficulty (v2 difficulty curve)."""
+
+    def test_first_questions_easy(self):
+        assert get_suggested_difficulty(0) == "easy"
+        assert get_suggested_difficulty(1) == "easy"
+
+    def test_mid_session_medium(self):
+        assert get_suggested_difficulty(2) == "medium"
+        assert get_suggested_difficulty(3) == "medium"
+        assert get_suggested_difficulty(4) == "medium"
+
+    def test_later_questions_hard(self):
+        assert get_suggested_difficulty(5) == "hard"
+        assert get_suggested_difficulty(10) == "hard"
 
 
 @pytest.mark.asyncio
