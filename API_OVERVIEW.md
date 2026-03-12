@@ -239,12 +239,77 @@ No parameters or body.
 | Method | Path | Summary |
 |--------|------|--------|
 | GET | `/users/me/readiness` | Combined readiness (CV score + session avg + gap penalty) |
+| GET | `/users/me/readiness/summary` | Readiness summary + aggregates for dashboard |
+| GET | `/users/me/readiness/trend` | Recent session readiness scores for trend charts |
 
 ### GET `/users/me/readiness`
 
 **Query parameters:** `resume_id` (optional), `job_posting_id` (optional). If both provided, CV score and gap analysis are included.
 
 **Response payload:** `combined_score`, `cv_score`, `session_avg`, `gap_severity`, `trend`.
+
+---
+
+### GET `/users/me/readiness/summary`
+
+**Query parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `resume_id` | UUID | No | Optional resume ID for CV score and gap analysis. |
+| `job_posting_id` | UUID | No | Optional job posting ID for gap analysis (requires resume_id). |
+| `last_n_sessions` | int | No | Number of recent sessions to include in aggregates (default 5, max 50). |
+
+**Response payload:** Dashboard-oriented readiness summary:
+
+```json
+{
+  "combined_score": 82.5,
+  "trend": "stable",
+  "cv_score": 78.0,
+  "session_avg": 85.3,
+  "gap_severity": "medium",
+  "session_count_total": 14,
+  "session_count_with_scores": 9,
+  "last_n_sessions": 5,
+  "difficulty_distribution": {
+    "easy": 4,
+    "medium": 7,
+    "hard": 2
+  }
+}
+```
+
+---
+
+### GET `/users/me/readiness/trend`
+
+**Query parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `limit` | int | No | Max number of recent sessions to return (default 10, max 100). |
+
+**Response payload:** Array of recent sessions (newest first), e.g.:
+
+```json
+[
+  {
+    "session_id": "uuid",
+    "created_at": "2026-03-12T10:15:00",
+    "mode": "TARGETED",
+    "readiness_score": 84.0,
+    "title": "ASE Backend – Python role"
+  },
+  {
+    "session_id": "uuid",
+    "created_at": "2026-03-10T17:30:00",
+    "mode": "QUICK_PRACTICE",
+    "readiness_score": 79.5,
+    "title": null
+  }
+]
+```
 
 ---
 
