@@ -7,13 +7,22 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
-from app.api.users.schemas import ReadinessSummaryResponse, ReadinessTrendItem
+from app.api.users.schemas import (
+    HomeSummaryCard,
+    HomeSummaryItem,
+    HomeSummaryPayload,
+    ReadinessSummaryResponse,
+    ReadinessTrendItem,
+)
 from app.common.http_response_model import CommonResponse
 from app.models import User
 from app.api.users.service import (
     get_cv_and_gap,
+    get_jump_back_in_items,
     get_readiness_trend_data,
+    get_readiness_tracker_items,
     get_recent_session_stats,
+    get_refine_cv_items,
 )
 from app.services.readiness_aggregator import compute_combined_readiness
 
@@ -178,5 +187,53 @@ async def get_my_readiness_summary(
     return CommonResponse(
         success=True,
         message="Readiness summary retrieved successfully",
+        payload=payload,
+    )
+
+
+@router.get(
+    "/me/home-summary",
+    response_model=CommonResponse[HomeSummaryPayload],
+    name="Get home summary",
+    summary="Get summary cards for the home/dashboard view (Jump Back In, Refine CV, Readiness Tracker).",
+)
+async def get_my_home_summary(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns three cards with actionable items for the Summary view:
+    - Jump Back In: recent sessions with session_id and href
+    - Refine CV: skill-gap suggestions with resume_id / job_posting_id
+    - Readiness Tracker: readiness insights with session_id / job_posting_id and a Start practice CTA
+    """
+    jump_items = await get_jump_back_in_items(db=db, current_user=current_user, limit=5)
+    refine_items = await get_refine_cv_items(db=db, current_user=current_user, max_items=5)
+    readiness_items = await get_readiness_tracker_items(db=db, current_user=current_user, limit=5)
+
+    cards = [
+        HomeSummaryCard(
+            id="jump_back_in",
+            title="Jump Back In",
+            icon="messages",
+            items=[HomeSummaryItem(**it) for it in jump_items],
+        ),
+        HomeSummaryCard(
+            id="refine_cv",
+            title="Refine CV",
+            icon="sparkles",
+            items=[HomeSummaryItem(**it) for it in refine_items],
+        ),
+        HomeSummaryCard(
+            id="readiness_tracker",
+            title="Readiness Tracker",
+            icon="shield",
+            items=[HomeSummaryItem(**it) for it in readiness_items],
+        ),
+    ]
+    payload = HomeSummaryPayload(cards=cards)
+    return CommonResponse(
+        success=True,
+        message="Home summary retrieved successfully",
         payload=payload,
     )

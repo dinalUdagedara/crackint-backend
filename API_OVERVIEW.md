@@ -241,6 +241,7 @@ No parameters or body.
 | GET | `/users/me/readiness` | Combined readiness (CV score + session avg + gap penalty) |
 | GET | `/users/me/readiness/summary` | Readiness summary + aggregates for dashboard |
 | GET | `/users/me/readiness/trend` | Recent session readiness scores for trend charts |
+| GET | `/users/me/home-summary` | Home/dashboard summary cards (Jump Back In, Refine CV, Readiness Tracker) |
 
 ### GET `/users/me/readiness`
 
@@ -309,6 +310,67 @@ No parameters or body.
     "title": null
   }
 ]
+```
+
+---
+
+### GET `/users/me/home-summary`
+
+**When to use:** Summary view on the home/dashboard. Returns three cards with actionable items so the frontend can render "Jump Back In", "Refine CV", and "Readiness Tracker" and link each item to sessions, resumes, or job postings.
+
+**Auth:** Required (same as other `/users/me/*`).
+
+**Response payload:** `payload.cards` is an array of exactly three cards (fixed order):
+
+| Card `id` | `title` | `icon` | Contents |
+|-----------|--------|--------|----------|
+| `jump_back_in` | Jump Back In | `messages` | Recent sessions: `title`, `session_id`, `href` |
+| `refine_cv` | Refine CV | `sparkles` | Skill-gap suggestions: `title`, optional `resume_id`, `job_posting_id`, `href` |
+| `readiness_tracker` | Readiness Tracker | `shield` | Readiness insights: `title`, `session_id`/`job_posting_id`, `href`; plus a "Start practice" item with `action_type: "start_session"` |
+
+Each **item** in `cards[].items` has:
+
+- **`title`** (string, required)
+- **`description`** (string, optional)
+- **`href`** (string, optional) — e.g. `/sessions/{id}`, `/resumes/{id}`, `/job-postings/{id}`
+- **`session_id`**, **`resume_id`**, **`job_posting_id`** (strings, optional) — for frontend route building
+- **`action_type`** (string, optional) — e.g. `start_session`, `open_cv`, `open_job`
+
+Example (minimal):
+
+```json
+{
+  "success": true,
+  "payload": {
+    "cards": [
+      {
+        "id": "jump_back_in",
+        "title": "Jump Back In",
+        "icon": "messages",
+        "items": [
+          { "title": "Practice session", "session_id": "uuid", "href": "/sessions/uuid" }
+        ]
+      },
+      {
+        "id": "refine_cv",
+        "title": "Refine CV",
+        "icon": "sparkles",
+        "items": [
+          { "title": "Consider adding or highlighting these skills: Docker.", "resume_id": "uuid", "job_posting_id": "uuid", "href": "/resumes/uuid" }
+        ]
+      },
+      {
+        "id": "readiness_tracker",
+        "title": "Readiness Tracker",
+        "icon": "shield",
+        "items": [
+          { "title": "Readiness for Frontend Engineer (Shopify) is 72%", "job_posting_id": "uuid", "href": "/job-postings/uuid" },
+          { "title": "Start practice", "action_type": "start_session" }
+        ]
+      }
+    ]
+  }
+}
 ```
 
 ---

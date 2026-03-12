@@ -172,5 +172,159 @@ async def get_readiness_trend_data(
             "mode": s.mode,
             "readiness_score": readiness,
             "title": title,
+            "job_posting_id": s.job_posting_id,
         })
+    return items
+
+
+# --- Home summary card builders ---
+
+async def get_jump_back_in_items(
+    db: AsyncSession,
+    current_user: User,
+    limit: int = 5,
+) -> List[Dict]:
+    """
+    Build items for the Jump Back In card: recent sessions with title and session_id.
+    Returns list of dicts suitable for HomeSummaryItem (title, session_id, href).
+    """
+    result = await db.execute(
+        select(PrepSession)
+        .where(PrepSession.user_id == current_user.id)
+        .order_by(PrepSession.updated_at.desc())
+        .limit(limit)
+    )
+    sessions = list(result.scalars().all())
+    items: List[Dict] = []
+    for s in sessions:
+        summary = s.summary or {}
+        title = summary.get("title") if isinstance(summary, dict) else None
+        if not title or not str(title).strip():
+            title = "Practice session"
+        items.append({
+            "title": str(title).strip(),
+            "session_id": str(s.id),
+            "href": f"/sessions/{s.id}",
+        })
+    return items
+
+
+async def get_refine_cv_items(
+    db: AsyncSession,
+    current_user: User,
+    max_items: int = 5,
+) -> List[Dict]:
+    """
+    Build items for the Refine CV card from skill-gap suggestions across resume+job pairs.
+    Returns list of dicts suitable for HomeSummaryItem.
+    """
+    resumes_result = await db.execute(
+        select(Resume).where(Resume.user_id == current_user.id).limit(3)
+    )
+    resumes = list(resumes_result.scalars().all())
+    jobs_result = await db.execute(
+        select(JobPosting).where(JobPosting.user_id == current_user.id).limit(5)
+    )
+    jobs = list(jobs_result.scalars().all())
+
+    if not resumes or not jobs:
+        return [{
+            "title": "Upload a resume and add a job to get tailored suggestions.",
+            "action_type": "open_cv",
+        }]
+
+    items: List[Dict] = []
+    for resume in resumes:
+        for job in jobs:
+            if len(items) >= max_items:
+                break
+            result = analyze_skill_gap(
+                resume_entities=resume.entities or {},
+                job_entities=job.entities or {},
+            )
+            for suggestion in (result.get("suggestions") or []):
+                if len(items) >= max_items:
+                    break
+                if not suggestion or not str(suggestion).strip():
+                    continue
+                items.append({
+                    "title": str(suggestion).strip(),
+                    "resume_id": str(resume.id),
+                    "job_posting_id": str(job.id),
+                    "href": f"/resumes/{resume.id}",
+                })
+        if len(items) >= max_items:
+            break
+
+    if not items:
+        items = [{
+            "title": "Your CV aligns well with your saved jobs. Add more jobs for new suggestions.",
+            "action_type": "open_cv",
+        }]
+    return items
+
+
+def _job_label_from_entities(entities: Optional[Dict]) -> str:
+    """Derive a short human-readable job label from job posting entities."""
+    if not entities or not isinstance(entities, dict):
+        return "Job"
+    titles = entities.get("JOB_TITLE") or entities.get("JOB_TITLE_REQUIRED") or []
+    companies = entities.get("COMPANY") or []
+    if isinstance(titles, list) and titles:
+        title_part = titles[0] if titles else "Job"
+    else:
+        title_part = "Job"
+    if isinstance(companies, list) and companies:
+        return f"{title_part} ({companies[0]})"
+    return str(title_part)
+
+
+async def get_readiness_tracker_items(
+    db: AsyncSession,
+    current_user: User,
+    limit: int = 5,
+) -> List[Dict]:
+    """
+    Build items for the Readiness Tracker card from recent sessions with readiness scores.
+    Enriches with job title when session has job_posting_id.
+    Returns list of dicts suitable for HomeSummaryItem.
+    """
+    trend = await get_readiness_trend_data(
+        db=db,
+        user_id=current_user.id,
+        limit=limit,
+    )
+    items: List[Dict] = []
+    for row in trend:
+        session_id = row.get("session_id")
+        score = row.get("readiness_score")
+        session_title = row.get("title")
+        job_posting_id = row.get("job_posting_id")
+
+        if job_posting_id:
+            job = await db.get(JobPosting, job_posting_id)
+            if job and job.user_id == current_user.id:
+                label = _job_label_from_entities(job.entities)
+                title = f"Readiness for {label} is {score:.0f}%" if score is not None else f"Readiness for {label} — no score yet"
+            else:
+                label = session_title or "Session"
+                title = f"Readiness: {label} — {score:.0f}%" if score is not None else f"Readiness: {label}"
+        else:
+            label = session_title or "Session"
+            title = f"Readiness: {label} — {score:.0f}%" if score is not None else f"Readiness: {label}"
+
+        item = {
+            "title": title,
+            "session_id": str(session_id),
+            "href": f"/sessions/{session_id}",
+        }
+        if job_posting_id:
+            item["job_posting_id"] = str(job_posting_id)
+            item["href"] = f"/job-postings/{job_posting_id}"
+        items.append(item)
+
+    items.append({
+        "title": "Start practice",
+        "action_type": "start_session",
+    })
     return items
