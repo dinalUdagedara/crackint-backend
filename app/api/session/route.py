@@ -14,6 +14,7 @@ from app.agents.session_qa_agent import (
     classify_and_redirect,
     evaluate_answer,
     generate_next_question,
+    get_suggested_difficulty,
     summarize_session_feedback,
     generate_session_title,
     generate_tutor_chat_reply,
@@ -346,6 +347,8 @@ async def post_next_question(
         for m in messages_list
     ]
     question_type = body.question_type if body.question_type else None
+    question_index = sum(1 for m in messages_list if m.type == "QUESTION")
+    suggested_difficulty = body.prefer_difficulty or get_suggested_difficulty(question_index)
 
     try:
         result = await generate_next_question(
@@ -354,6 +357,8 @@ async def post_next_question(
             resume_entities=resume_entities,
             previous_messages=previous_messages,
             question_type=question_type,
+            question_index=question_index,
+            suggested_difficulty=suggested_difficulty,
         )
     except ValueError as e:
         raise HTTPException(
@@ -474,7 +479,7 @@ async def post_chat_turn(
     # Case A: no QUESTION yet -> start interview by asking the first question
     if not last_question_content:
         role_level = RoleLevel.ASE.value
-        previous_messages: List[Dict[str, Any]] = [
+        previous_messages = [
             {"sender": m.sender, "type": m.type, "content": m.content}
             for m in messages_list
         ] + [
@@ -484,6 +489,8 @@ async def post_chat_turn(
                 "content": user_message.content,
             }
         ]
+        question_index = sum(1 for m in messages_list if m.type == "QUESTION")
+        suggested_difficulty = body.prefer_difficulty or get_suggested_difficulty(question_index)
         try:
             result = await generate_next_question(
                 role_level=role_level,
@@ -491,6 +498,8 @@ async def post_chat_turn(
                 resume_entities=resume_entities,
                 previous_messages=previous_messages,
                 question_type=None,
+                question_index=question_index,
+                suggested_difficulty=suggested_difficulty,
             )
         except ValueError as e:
             raise HTTPException(
@@ -540,7 +549,7 @@ async def post_chat_turn(
 
     if redirect_message == NEXT_QUESTION_SENTINEL:
         # User asked to skip to next question: generate and return it (no feedback).
-        previous_messages_skip: List[Dict[str, Any]] = [
+        previous_messages_skip = [
             {"sender": m.sender, "type": m.type, "content": m.content}
             for m in messages_list
         ] + [
@@ -550,6 +559,8 @@ async def post_chat_turn(
                 "content": user_message.content,
             },
         ]
+        question_index_skip = sum(1 for m in messages_list if m.type == "QUESTION")
+        suggested_difficulty_skip = body.prefer_difficulty or get_suggested_difficulty(question_index_skip)
         try:
             next_q_result = await generate_next_question(
                 role_level=role_level,
@@ -557,6 +568,8 @@ async def post_chat_turn(
                 resume_entities=resume_entities,
                 previous_messages=previous_messages_skip,
                 question_type=None,
+                question_index=question_index_skip,
+                suggested_difficulty=suggested_difficulty_skip,
             )
         except ValueError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
@@ -685,7 +698,7 @@ async def post_chat_turn(
             pass
 
     # Generate next question after providing feedback
-    previous_messages_for_next_q: List[Dict[str, Any]] = [
+    previous_messages_for_next_q = [
         {"sender": m.sender, "type": m.type, "content": m.content}
         for m in messages_list
     ] + [
@@ -700,6 +713,8 @@ async def post_chat_turn(
             "content": feedback_message.content,
         },
     ]
+    question_index_next = sum(1 for m in messages_list if m.type == "QUESTION")
+    suggested_difficulty_next = body.prefer_difficulty or get_suggested_difficulty(question_index_next)
 
     try:
         next_q_result = await generate_next_question(
@@ -708,6 +723,8 @@ async def post_chat_turn(
             resume_entities=resume_entities,
             previous_messages=previous_messages_for_next_q,
             question_type=None,
+            question_index=question_index_next,
+            suggested_difficulty=suggested_difficulty_next,
         )
     except ValueError as e:
         # If next-question generation fails, still return feedback
@@ -801,7 +818,7 @@ async def post_send(
 
     if redirect_message == NEXT_QUESTION_SENTINEL:
         # User asked to skip: generate next question and return it (no redirect feedback).
-        previous_messages_skip: List[Dict[str, Any]] = [
+        previous_messages_skip = [
             {"sender": m.sender, "type": m.type, "content": m.content}
             for m in messages_list
         ] + [
@@ -811,6 +828,8 @@ async def post_send(
                 "content": user_message.content,
             },
         ]
+        question_index_send = sum(1 for m in messages_list if m.type == "QUESTION")
+        suggested_difficulty_send = body.prefer_difficulty or get_suggested_difficulty(question_index_send)
         try:
             next_q_result = await generate_next_question(
                 role_level=role_level,
@@ -818,10 +837,12 @@ async def post_send(
                 resume_entities=resume_entities,
                 previous_messages=previous_messages_skip,
                 question_type=None,
+                question_index=question_index_send,
+                suggested_difficulty=suggested_difficulty_send,
             )
         except ValueError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
-        next_meta: Dict[str, Any] = {}
+        next_meta = {}
         if next_q_result.difficulty:
             next_meta["difficulty"] = next_q_result.difficulty
         if next_q_result.question_type:
@@ -1014,10 +1035,12 @@ async def post_evaluate_answer(
         ) from e
 
     if redirect_message == NEXT_QUESTION_SENTINEL:
-        previous_messages_skip: List[Dict[str, Any]] = [
+        previous_messages_skip = [
             {"sender": m.sender, "type": m.type, "content": m.content}
             for m in messages_list
         ]
+        question_index_eval = sum(1 for m in messages_list if m.type == "QUESTION")
+        suggested_difficulty_eval = body.prefer_difficulty or get_suggested_difficulty(question_index_eval)
         try:
             next_q_result = await generate_next_question(
                 role_level=role_level,
@@ -1025,10 +1048,12 @@ async def post_evaluate_answer(
                 resume_entities=resume_entities,
                 previous_messages=previous_messages_skip,
                 question_type=None,
+                question_index=question_index_eval,
+                suggested_difficulty=suggested_difficulty_eval,
             )
         except ValueError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
-        next_meta: Dict[str, Any] = {}
+        next_meta = {}
         if next_q_result.difficulty:
             next_meta["difficulty"] = next_q_result.difficulty
         if next_q_result.question_type:

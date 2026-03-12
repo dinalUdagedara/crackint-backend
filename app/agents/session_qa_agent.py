@@ -13,20 +13,42 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# --- Question generation ---
+# --- Question generation (v2: domain-agnostic role level + difficulty curve) ---
 
-QUESTION_SYSTEM_PROMPT = """You are an expert technical interviewer. Your task is to generate exactly one interview question for a practice session.
+# Difficulty curve: map 0-based question index in session to suggested difficulty.
+# Sessions progress from easier to harder. Thresholds are tunable.
+DIFFICULTY_CURVE_EASY_UNTIL = 2   # indices 0, 1 -> easy
+DIFFICULTY_CURVE_MEDIUM_UNTIL = 5  # indices 2, 3, 4 -> medium; 5+ -> hard
+
+
+def get_suggested_difficulty(question_index: int) -> str:
+    """Return suggested difficulty for the next question based on position in session (0-based)."""
+    if question_index < DIFFICULTY_CURVE_EASY_UNTIL:
+        return "easy"
+    if question_index < DIFFICULTY_CURVE_MEDIUM_UNTIL:
+        return "medium"
+    return "hard"
+
+
+QUESTION_SYSTEM_PROMPT = """You are an expert interviewer. Your task is to generate exactly one interview question for a practice session. The job can be in any field (software, finance, marketing, operations, data, design, etc.); the job and resume entities define the domain and question type. Role level only sets depth and expectations.
+
+Role level (generic seniority; apply to any industry):
+- INTERN (entry-level): Learning mindset, foundational knowledge, willingness to grow. Ask questions appropriate for someone early in their career in this field. Simpler depth; focus on basics and learning experiences.
+- ASE (mid-level): Ownership of deliverables, concrete examples with impact, decisions within a given scope. Ask questions for someone who can run projects or processes independently in this role.
+- SSE (senior): Broader scope, leadership, mentoring, strategy, trade-offs. Ask questions for someone leading or influencing outcomes beyond their immediate work.
 
 Context you will receive:
-- Role level: INTERN, ASE, or SSE (adjust question depth and scope accordingly).
-- Job posting entities: job title, company, required skills, experience, education, job type.
+- Role level: INTERN, ASE, SSE, or OTHER (use the definitions above for depth and scope).
+- Job posting entities: job title, company, required skills, experience, education, job type (these define the domain and what to ask about).
 - Candidate resume entities: skills, occupation, education, experience.
 - The list of questions and messages already exchanged in this session (do not repeat or rephrase those questions).
+- Optional: suggested difficulty for this question and position in session (session should progress from easier to harder).
 
 Rules:
-- Output exactly one new question suitable for the given role level and aligned with the job requirements and the candidate's background.
+- Output exactly one new question suitable for the given role level and aligned with the job requirements and the candidate's background. The domain (e.g. technical, behavioral, process design) comes from the job and resume; role level only adjusts how deep or broad the question is.
 - Prefer questions that let the candidate demonstrate relevant skills or experience from their resume where applicable.
-- If question_type is specified (technical, behavioral, or system_design), generate that type; otherwise you may choose.
+- If question_type is specified (technical, behavioral, or system_design), generate that type; otherwise you may choose based on the job.
+- If a suggested difficulty is provided, prefer that difficulty (easy / medium / hard) so the session progresses from easier to harder.
 - Respond with a single JSON object with keys: "question" (string), optional "difficulty" (easy|medium|hard), optional "question_type" (technical|behavioral|system_design).
 - Do not include any text outside the JSON object."""
 
@@ -72,9 +94,13 @@ async def generate_next_question(
     resume_entities: Dict[str, List[str]],
     previous_messages: List[Dict[str, Any]],
     question_type: Optional[str] = None,
+    question_index: int = 0,
+    suggested_difficulty: Optional[str] = None,
 ) -> QuestionGenerationResult:
     """
     Call LLM to generate the next interview question.
+    question_index: 0-based count of QUESTION messages already in the session (for difficulty curve).
+    suggested_difficulty: preferred difficulty for this position (easy/medium/hard); session progresses easier to harder.
     Raises ValueError if agent disabled/API key missing or LLM fails.
     """
     if not _is_session_qa_available():
@@ -92,8 +118,12 @@ async def generate_next_question(
         messages_formatted = "(No previous messages yet.)"
     qtype_str = question_type or "(any)"
 
-    user_content = f"""Role level: {role_level}
+    difficulty_line = ""
+    if suggested_difficulty:
+        difficulty_line = f"\nThis is question number {question_index + 1} in this session. Prefer difficulty: {suggested_difficulty}. The session should progress from easier to harder.\n"
 
+    user_content = f"""Role level: {role_level}
+{difficulty_line}
 Job posting entities (key: list of values):
 {job_json}
 

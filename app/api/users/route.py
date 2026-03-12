@@ -1,44 +1,34 @@
 """Users API: readiness dashboard, etc."""
 
 import uuid as uuid_pkg
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
+from app.api.users.schemas import (
+    HomeSummaryCard,
+    HomeSummaryItem,
+    HomeSummaryPayload,
+    ReadinessSummaryResponse,
+    ReadinessTrendItem,
+)
 from app.common.http_response_model import CommonResponse
-from app.models import JobPosting, Message, PrepSession, Resume, User
+from app.models import User
+from app.api.users.service import (
+    get_cv_and_gap,
+    get_jump_back_in_items,
+    get_readiness_trend_data,
+    get_readiness_tracker_items,
+    get_recent_session_stats,
+    get_refine_cv_items,
+)
 from app.services.readiness_aggregator import compute_combined_readiness
-from app.services.skill_gap_service import analyze_skill_gap
-from app.services.cv_scoring import score_cv_from_raw_text
 
 router = APIRouter()
 
 LAST_N_SESSIONS = 5
-
-
-async def _compute_session_readiness(db: AsyncSession, session_id: uuid_pkg.UUID) -> Optional[float]:
-    """Compute readiness as average of FEEDBACK message scores."""
-    result = await db.execute(
-        select(Message).where(
-            Message.session_id == session_id,
-            Message.type == "FEEDBACK",
-        )
-    )
-    messages = list(result.scalars().all())
-    scores: list[float] = []
-    for m in messages:
-        raw = (m.meta or {}).get("score")
-        if raw is not None:
-            try:
-                scores.append(float(raw))
-            except (TypeError, ValueError):
-                pass
-    if not scores:
-        return None
-    return round(sum(scores) / len(scores), 2)
 
 
 @router.get(
@@ -65,45 +55,18 @@ async def get_my_readiness(
     - Average of last N session readiness scores
     - Gap penalty (if resume_id and job_posting_id provided)
     """
-    cv_score: Optional[float] = None
-    gap_severity: Optional[str] = None
-
-    if resume_id:
-        resume = await db.get(Resume, resume_id)
-        if resume is None or resume.user_id != current_user.id:
-            raise HTTPException(status_code=404, detail="Resume not found.")
-
-        if (resume.raw_text or "").strip():
-            try:
-                result = await score_cv_from_raw_text(resume.raw_text)
-                cv_score = result.score
-            except ValueError:
-                pass  # CV scoring disabled or failed; continue without cv_score
-
-        if job_posting_id:
-            job = await db.get(JobPosting, job_posting_id)
-            if job is None or job.user_id != current_user.id:
-                raise HTTPException(status_code=404, detail="Job posting not found.")
-            gap_result = analyze_skill_gap(
-                resume_entities=resume.entities or {},
-                job_entities=job.entities or {},
-            )
-            gap_severity = gap_result.get("severity")
-
-    # Session average
-    result = await db.execute(
-        select(PrepSession)
-        .where(PrepSession.user_id == current_user.id)
-        .order_by(PrepSession.updated_at.desc())
-        .limit(LAST_N_SESSIONS)
+    cv_score, gap_severity = await get_cv_and_gap(
+        db=db,
+        current_user=current_user,
+        resume_id=resume_id,
+        job_posting_id=job_posting_id,
     )
-    sessions = list(result.scalars().all())
-    session_scores: list[float] = []
-    for s in sessions:
-        rs = await _compute_session_readiness(db, s.id)
-        if rs is not None:
-            session_scores.append(rs)
-    session_avg: Optional[float] = round(sum(session_scores) / len(session_scores), 2) if session_scores else None
+
+    session_avg, _total, _with_scores, _dist = await get_recent_session_stats(
+        db=db,
+        current_user=current_user,
+        last_n_sessions=LAST_N_SESSIONS,
+    )
 
     combined, trend = compute_combined_readiness(
         cv_score=cv_score,
@@ -121,5 +84,156 @@ async def get_my_readiness(
     return CommonResponse(
         success=True,
         message="Readiness retrieved successfully",
+        payload=payload,
+    )
+
+
+@router.get(
+    "/me/readiness/trend",
+    response_model=CommonResponse[List[ReadinessTrendItem]],
+    name="Get readiness trend",
+    summary="Get recent session readiness scores for the current user.",
+)
+async def get_my_readiness_trend(
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum number of recent sessions to return.",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return a list of recent sessions with individual readiness scores and timestamps
+    for plotting trends in the frontend.
+    """
+    data = await get_readiness_trend_data(
+        db=db,
+        user_id=current_user.id,
+        limit=limit,
+    )
+    items = [ReadinessTrendItem(**item) for item in data]
+    return CommonResponse(
+        success=True,
+        message="Readiness trend retrieved successfully",
+        payload=items,
+    )
+
+
+@router.get(
+    "/me/readiness/summary",
+    response_model=CommonResponse[ReadinessSummaryResponse],
+    name="Get readiness summary",
+    summary="Get readiness summary and aggregates for the current user (dashboard).",
+)
+async def get_my_readiness_summary(
+    resume_id: Optional[uuid_pkg.UUID] = Query(
+        default=None,
+        description="Optional resume ID for CV score and gap analysis.",
+    ),
+    job_posting_id: Optional[uuid_pkg.UUID] = Query(
+        default=None,
+        description="Optional job posting ID for gap analysis (requires resume_id).",
+    ),
+    last_n_sessions: int = Query(
+        default=LAST_N_SESSIONS,
+        ge=1,
+        le=50,
+        description="Number of recent sessions to consider for session_avg and difficulty distribution.",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns a dashboard-friendly readiness summary aggregating:
+    - Combined readiness score and trend
+    - CV score and gap severity (if resume/job IDs provided)
+    - Session averages and counts
+    - Difficulty distribution over recent sessions
+    """
+    cv_score, gap_severity = await get_cv_and_gap(
+        db=db,
+        current_user=current_user,
+        resume_id=resume_id,
+        job_posting_id=job_posting_id,
+    )
+
+    session_avg, session_count_total, session_count_with_scores, difficulty_distribution = (
+        await get_recent_session_stats(
+            db=db,
+            current_user=current_user,
+            last_n_sessions=last_n_sessions,
+        )
+    )
+
+    combined, trend = compute_combined_readiness(
+        cv_score=cv_score,
+        session_avg=session_avg,
+        gap_severity=gap_severity,
+    )
+
+    payload = ReadinessSummaryResponse(
+        combined_score=combined,
+        trend=trend,
+        cv_score=cv_score,
+        session_avg=session_avg,
+        gap_severity=gap_severity,
+        session_count_total=session_count_total,
+        session_count_with_scores=session_count_with_scores,
+        last_n_sessions=last_n_sessions,
+        difficulty_distribution=difficulty_distribution,
+    )
+    return CommonResponse(
+        success=True,
+        message="Readiness summary retrieved successfully",
+        payload=payload,
+    )
+
+
+@router.get(
+    "/me/home-summary",
+    response_model=CommonResponse[HomeSummaryPayload],
+    name="Get home summary",
+    summary="Get summary cards for the home/dashboard view (Jump Back In, Refine CV, Readiness Tracker).",
+)
+async def get_my_home_summary(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns three cards with actionable items for the Summary view:
+    - Jump Back In: recent sessions with session_id and href
+    - Refine CV: skill-gap suggestions with resume_id / job_posting_id
+    - Readiness Tracker: readiness insights with session_id / job_posting_id and a Start practice CTA
+    """
+    jump_items = await get_jump_back_in_items(db=db, current_user=current_user, limit=5)
+    refine_items = await get_refine_cv_items(db=db, current_user=current_user, max_items=5)
+    readiness_items = await get_readiness_tracker_items(db=db, current_user=current_user, limit=5)
+
+    cards = [
+        HomeSummaryCard(
+            id="jump_back_in",
+            title="Jump Back In",
+            icon="messages",
+            items=[HomeSummaryItem(**it) for it in jump_items],
+        ),
+        HomeSummaryCard(
+            id="refine_cv",
+            title="Refine CV",
+            icon="sparkles",
+            items=[HomeSummaryItem(**it) for it in refine_items],
+        ),
+        HomeSummaryCard(
+            id="readiness_tracker",
+            title="Readiness Tracker",
+            icon="shield",
+            items=[HomeSummaryItem(**it) for it in readiness_items],
+        ),
+    ]
+    payload = HomeSummaryPayload(cards=cards)
+    return CommonResponse(
+        success=True,
+        message="Home summary retrieved successfully",
         payload=payload,
     )

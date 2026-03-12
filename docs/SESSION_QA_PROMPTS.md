@@ -2,25 +2,27 @@
 
 Design doc for the Session Q&A agent: **question generation** and **answer evaluation**. Used by `POST /api/v1/sessions/{id}/next-question` and `POST /api/v1/sessions/{id}/evaluate-answer`.
 
-**Last updated:** Feb 2026
+**Last updated:** Mar 2026 (v2: domain-agnostic role level + difficulty curve)
 
 ---
 
-## 1. Question Generation
+## 1. Question Generation (v2)
 
 ### 1.1 Purpose
 
-Generate the **next interview question** for a chat-style prep session. The question should be personalized to the candidate’s resume and the target job, and avoid repeating questions already asked in the session.
+Generate the **next interview question** for a chat-style prep session. The question should be personalized to the candidate’s resume and the target job, and avoid repeating questions already asked. **Role level** (INTERN/ASE/SSE) is **generic seniority** for any job type; the job and resume entities define the domain. **Difficulty curve**: sessions progress from easier to harder; the backend suggests a difficulty based on question position.
 
 ### 1.2 Inputs
 
 | Input | Type | Description |
 |-------|------|--------------|
-| `role_level` | `str` | Candidate level: `INTERN`, `ASE`, `SSE`, or `OTHER`. Adjust difficulty and expectations. |
-| `job_entities` | `Dict[str, List[str]]` | From job posting NER: e.g. `JOB_TITLE`, `COMPANY`, `SKILLS_REQUIRED`, `EXPERIENCE_REQUIRED`, `EDUCATION_REQUIRED`, `JOB_TYPE`, etc. |
+| `role_level` | `str` | Generic seniority: `INTERN` (entry-level), `ASE` (mid-level), `SSE` (senior), or `OTHER`. Adjust depth and expectations; domain comes from job/resume. |
+| `job_entities` | `Dict[str, List[str]]` | From job posting NER: e.g. `JOB_TITLE`, `COMPANY`, `SKILLS_REQUIRED`, etc. Define the domain and what to ask about. |
 | `resume_entities` | `Dict[str, List[str]]` | From resume NER: e.g. `NAME`, `SKILL`, `OCCUPATION`, `EDUCATION`, `EXPERIENCE`, etc. |
 | `previous_messages` | `List[{sender, type, content}]` | Messages in this session so far (chronological). Used to avoid repeating questions. |
 | `question_type` | `str` (optional) | Requested type: `technical`, `behavioral`, or `system_design`. If omitted, model may choose. |
+| `question_index` | `int` (optional) | 0-based count of QUESTION messages already in the session. Used for difficulty curve. |
+| `suggested_difficulty` | `str` (optional) | Preferred difficulty for this question: `easy`, `medium`, or `hard`. Session progresses easier to harder. |
 
 ### 1.3 Output Schema
 
@@ -42,43 +44,13 @@ The LLM must return **valid JSON** with:
 }
 ```
 
-### 1.4 Prompt Template
+### 1.4 Prompt Template (v2: domain-agnostic role + difficulty curve)
 
-**System prompt:**
+**System prompt:** See `QUESTION_SYSTEM_PROMPT` in `app/agents/session_qa_agent.py`. It defines:
+- Role level as **generic seniority** (INTERN = entry-level, ASE = mid-level, SSE = senior) for **any industry**. Job and resume entities define the domain.
+- Optional suggested difficulty and position in session so the session progresses from easier to harder.
 
-```
-You are an expert technical interviewer. Your task is to generate exactly one interview question for a practice session.
-
-Context you will receive:
-- Role level: INTERN, ASE, or SSE (adjust question depth and scope accordingly).
-- Job posting entities: job title, company, required skills, experience, education, job type.
-- Candidate resume entities: skills, occupation, education, experience.
-- The list of questions and messages already exchanged in this session (do not repeat or rephrase those questions).
-
-Rules:
-- Output exactly one new question suitable for the given role level and aligned with the job requirements and the candidate's background.
-- Prefer questions that let the candidate demonstrate relevant skills or experience from their resume where applicable.
-- If question_type is specified (technical, behavioral, or system_design), generate that type; otherwise you may choose.
-- Respond with a single JSON object with keys: "question" (string), optional "difficulty" (easy|medium|hard), optional "question_type" (technical|behavioral|system_design).
-- Do not include any text outside the JSON object.
-```
-
-**User prompt (fill-in):**
-
-```
-Role level: {role_level}
-
-Job posting entities (key: list of values):
-{job_entities_json}
-
-Candidate resume entities (key: list of values):
-{resume_entities_json}
-
-Previous messages in this session (do not repeat these as questions):
-{previous_messages_formatted}
-
-Requested question type (or leave empty to choose): {question_type}
-```
+**User prompt (fill-in):** Role level; optional line "This is question number N in this session. Prefer difficulty: X." when `suggested_difficulty` is set; job_entities_json; resume_entities_json; previous_messages_formatted; requested question_type.
 
 ### 1.5 Example
 
