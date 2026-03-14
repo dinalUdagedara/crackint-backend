@@ -1,5 +1,6 @@
 """Schemas for match/skill-gap API."""
 
+from datetime import datetime
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
@@ -62,6 +63,10 @@ class SkillGapResponse(BaseModel):
     llm_fit_analysis: ResumeJobFitAnalysis | None = Field(
         default=None,
         description="LLM analysis of resume vs job (fit score, summary, tailored suggestions) when enabled and raw text available.",
+    )
+    analyzed_at: datetime | None = Field(
+        default=None,
+        description="When this analysis was run (set when stored or returned from cache).",
     )
 
 

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import ConfigDict
-from sqlalchemy import Column, text
+from sqlalchemy import Column, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -176,6 +176,35 @@ class Message(UUIDModel, TimestampModel, table=True):
             server_default=text("'{}'::jsonb"),
         ),
         description="Optional metadata such as scores, categories, etc.",
+    )
+
+
+class ResumeJobAnalysis(UUIDModel, TimestampModel, table=True):
+    """Stored result of resume vs job skill-gap (and optional LLM fit) analysis. One row per (resume_id, job_posting_id); overwritten on re-run."""
+
+    __tablename__ = "resume_job_analyses"
+    __table_args__ = (UniqueConstraint("resume_id", "job_posting_id", name="uq_resume_job_analyses_resume_job"),)
+
+    resume_id: uuid_pkg.UUID = Field(
+        foreign_key="resumes.id",
+        nullable=False,
+        index=True,
+    )
+    job_posting_id: uuid_pkg.UUID = Field(
+        foreign_key="job_postings.id",
+        nullable=False,
+        index=True,
+    )
+    result: Dict = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+        description="Full skill-gap response (missing_skills, severity, llm_fit_analysis, etc.) as JSON.",
+    )
+    analyzed_at: datetime = Field(
+        default_factory=datetime.now,
+        nullable=False,
+        sa_column_kwargs={"server_default": text("current_timestamp(0)")},
+        description="When the analysis was run.",
     )
 
 
