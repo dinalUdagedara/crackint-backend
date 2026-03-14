@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     CV_SCORING_ENABLED: bool = False
     CV_SCORING_MODEL: str = "gpt-4o-mini"
 
+    # Resume–job fit agent: LLM analysis of CV vs job posting (fit score, summary, suggestions)
+    RESUME_JOB_FIT_LLM_ENABLED: bool = False
+    RESUME_JOB_FIT_LLM_MODEL: str = "gpt-4o-mini"
+
     # Cover letter agent: LLM-based cover letter generation
     COVER_LETTER_AGENT_ENABLED: bool = True
     COVER_LETTER_AGENT_MODEL: str = "gpt-4o-mini"

@@ -1,15 +1,24 @@
 """Match API: skill-gap analysis between resume and job posting."""
 
+import logging
 import uuid as uuid_pkg
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.resume_job_fit_agent import analyze_resume_job_fit
 from app.api.deps import get_current_user, get_db
-from app.api.match.schemas import SkillGapAlert, SkillGapRequest, SkillGapResponse
+from app.api.match.schemas import (
+    ResumeJobFitAnalysis,
+    SkillGapAlert,
+    SkillGapRequest,
+    SkillGapResponse,
+)
 from app.common.http_response_model import CommonResponse
 from app.models import JobPosting, Resume, User
 from app.services.skill_gap_service import analyze_skill_gap
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -76,6 +85,20 @@ async def post_skill_gap(
         for a in result["alerts"]
     ]
 
+    llm_fit_analysis: ResumeJobFitAnalysis | None = None
+    resume_text = (resume.raw_text or "").strip()
+    job_text = (job.raw_text or "").strip()
+    if resume_text and job_text:
+        try:
+            fit_result = await analyze_resume_job_fit(resume_text, job_text)
+            llm_fit_analysis = ResumeJobFitAnalysis(
+                fit_score=fit_result.fit_score,
+                summary=fit_result.summary,
+                tailored_suggestions=fit_result.tailored_suggestions,
+            )
+        except ValueError as e:
+            logger.info("Match skill-gap: LLM fit analysis skipped or failed: %s", e)
+
     payload = SkillGapResponse(
         missing_skills=result["missing_skills"],
         weak_experience=result["weak_experience"],
@@ -85,6 +108,7 @@ async def post_skill_gap(
         suggestions=result["suggestions"],
         severity=result["severity"],
         alerts=alerts,
+        llm_fit_analysis=llm_fit_analysis,
     )
     return CommonResponse(
         success=True,
