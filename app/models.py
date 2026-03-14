@@ -58,7 +58,7 @@ class User(UUIDModel, TimestampModel, table=True):
 
 
 class Resume(UUIDModel, TimestampModel, table=True):
-    """Resume table: extracted entities (JSONB) and optional raw text; user_id set from auth."""
+    """Resume table: extracted entities (JSONB), optional raw text, and optional latest CV score; user_id set from auth."""
 
     __tablename__ = "resumes"
 
@@ -73,6 +73,17 @@ class Resume(UUIDModel, TimestampModel, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
     raw_text: Optional[str] = Field(default=None, nullable=True)
+    # Latest CV score from LLM (stored after POST/GET score or readiness when computed)
+    cv_score: Optional[float] = Field(default=None, nullable=True)
+    cv_breakdown: Optional[Dict[str, float]] = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+    )
+    cv_suggestions: Optional[List[str]] = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+    )
+    cv_scored_at: Optional[datetime] = Field(default=None, nullable=True)
 
 
 class JobPosting(UUIDModel, TimestampModel, table=True):
