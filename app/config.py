@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     # Google OAuth (for POST /auth/google - verify ID token and create/link user)
     GOOGLE_CLIENT_ID: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # AWS
     AWS_ACCESS_KEY_ID: Optional[str] = None
