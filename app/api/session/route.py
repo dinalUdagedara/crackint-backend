@@ -5,8 +5,8 @@ Prep session and message endpoints (MVP chat session APIs).
 from typing import Any, Dict, List, Optional
 import uuid as uuid_pkg
 
-from fastapi import APIRouter, Depends, HTTPException, Path
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.session_qa_agent import (
@@ -36,7 +36,7 @@ from app.api.session.schemas import (
     SendReplyPayload,
     SendReplyRequest,
 )
-from app.common.http_response_model import CommonResponse
+from app.common.http_response_model import CommonResponse, PageMeta
 from app.models import JobPosting, Message, PrepSession, Resume, User
 from app.schemas.common import RoleLevel, SenderType, SessionMode
 
@@ -44,6 +44,9 @@ router = APIRouter()
 
 # Update session summary (LLM) only every N FEEDBACK messages to reduce cost.
 SUMMARY_UPDATE_EVERY_N = 10
+
+DEFAULT_SESSION_PAGE_SIZE = 20
+MAX_SESSION_PAGE_SIZE = 100
 
 
 async def get_own_prep_session(
@@ -90,19 +93,67 @@ async def create_prep_session(
     "",
     response_model=CommonResponse[List[PrepSessionRead]],
     name="List prep sessions",
-    summary="List the current user's prep sessions.",
+    summary="List the current user's prep sessions, optionally filtered by job and paginated.",
 )
 async def list_prep_sessions(
+    job_posting_id: Optional[uuid_pkg.UUID] = Query(
+        default=None,
+        description="Filter sessions by job posting ID.",
+    ),
+    page: Optional[int] = Query(
+        default=None,
+        ge=1,
+        description="Page number (1-based). If omitted, returns all matching sessions without pagination.",
+    ),
+    page_size: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=MAX_SESSION_PAGE_SIZE,
+        description="Items per page. Used only when page is provided.",
+    ),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    result = await session.execute(
+    base_filter = PrepSession.user_id == current_user.id
+    if job_posting_id is not None:
+        base_filter = base_filter & (PrepSession.job_posting_id == job_posting_id)
+
+    count_q = (
+        select(func.count())
+        .select_from(PrepSession)
+        .where(base_filter)
+    )
+    total_result = await session.execute(count_q)
+    total_items = total_result.scalar_one() or 0
+
+    q = (
         select(PrepSession)
-        .where(PrepSession.user_id == current_user.id)
+        .where(base_filter)
         .order_by(PrepSession.updated_at.desc())
     )
+    use_pagination = page is not None and page_size is not None
+    if use_pagination:
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        offset = (page - 1) * page_size
+        q = q.offset(offset).limit(page_size)
+
+    result = await session.execute(q)
     rows = list(result.scalars().all())
     payload = [PrepSessionRead.model_validate(row) for row in rows]
+
+    if use_pagination:
+        meta = PageMeta(
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+            total_items=total_items,
+        )
+        return CommonResponse(
+            success=True,
+            message="Prep sessions retrieved successfully",
+            payload=payload,
+            meta=meta,
+        )
     return CommonResponse(
         success=True,
         message="Prep sessions retrieved successfully",

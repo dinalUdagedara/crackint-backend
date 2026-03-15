@@ -104,6 +104,17 @@ class JobPosting(UUIDModel, TimestampModel, table=True):
     raw_text: Optional[str] = Field(default=None, nullable=True)
     location: Optional[str] = Field(default=None, nullable=True)
     deadline: Optional[datetime] = Field(default=None, nullable=True)
+    # Job tracker / job detail fields (optional, additive)
+    display_order: Optional[int] = Field(default=None, nullable=True)
+    cover_image_url: Optional[str] = Field(default=None, nullable=True)
+    notes: Optional[str] = Field(default=None, nullable=True)
+    questions_to_ask: Optional[str] = Field(default=None, nullable=True)
+    interview_at: Optional[datetime] = Field(default=None, nullable=True)
+    contact_name: Optional[str] = Field(default=None, nullable=True)
+    contact_email: Optional[str] = Field(default=None, nullable=True)
+    talking_points: Optional[str] = Field(default=None, nullable=True)
+    application_url: Optional[str] = Field(default=None, nullable=True)
+    stage: Optional[str] = Field(default=None, nullable=True)
 
 
 class PrepSession(UUIDModel, TimestampModel, table=True):
