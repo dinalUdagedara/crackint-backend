@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import ConfigDict
-from sqlalchemy import Column, text
+from sqlalchemy import Column, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -58,7 +58,7 @@ class User(UUIDModel, TimestampModel, table=True):
 
 
 class Resume(UUIDModel, TimestampModel, table=True):
-    """Resume table: extracted entities (JSONB) and optional raw text; user_id set from auth."""
+    """Resume table: extracted entities (JSONB), optional raw text, and optional latest CV score; user_id set from auth."""
 
     __tablename__ = "resumes"
 
@@ -73,6 +73,17 @@ class Resume(UUIDModel, TimestampModel, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
     raw_text: Optional[str] = Field(default=None, nullable=True)
+    # Latest CV score from LLM (stored after POST/GET score or readiness when computed)
+    cv_score: Optional[float] = Field(default=None, nullable=True)
+    cv_breakdown: Optional[Dict[str, float]] = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+    )
+    cv_suggestions: Optional[List[str]] = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+    )
+    cv_scored_at: Optional[datetime] = Field(default=None, nullable=True)
 
 
 class JobPosting(UUIDModel, TimestampModel, table=True):
@@ -93,6 +104,17 @@ class JobPosting(UUIDModel, TimestampModel, table=True):
     raw_text: Optional[str] = Field(default=None, nullable=True)
     location: Optional[str] = Field(default=None, nullable=True)
     deadline: Optional[datetime] = Field(default=None, nullable=True)
+    # Job tracker / job detail fields (optional, additive)
+    display_order: Optional[int] = Field(default=None, nullable=True)
+    cover_image_url: Optional[str] = Field(default=None, nullable=True)
+    notes: Optional[str] = Field(default=None, nullable=True)
+    questions_to_ask: Optional[str] = Field(default=None, nullable=True)
+    interview_at: Optional[datetime] = Field(default=None, nullable=True)
+    contact_name: Optional[str] = Field(default=None, nullable=True)
+    contact_email: Optional[str] = Field(default=None, nullable=True)
+    talking_points: Optional[str] = Field(default=None, nullable=True)
+    application_url: Optional[str] = Field(default=None, nullable=True)
+    stage: Optional[str] = Field(default=None, nullable=True)
 
 
 class PrepSession(UUIDModel, TimestampModel, table=True):
@@ -176,6 +198,35 @@ class Message(UUIDModel, TimestampModel, table=True):
             server_default=text("'{}'::jsonb"),
         ),
         description="Optional metadata such as scores, categories, etc.",
+    )
+
+
+class ResumeJobAnalysis(UUIDModel, TimestampModel, table=True):
+    """Stored result of resume vs job skill-gap (and optional LLM fit) analysis. One row per (resume_id, job_posting_id); overwritten on re-run."""
+
+    __tablename__ = "resume_job_analyses"
+    __table_args__ = (UniqueConstraint("resume_id", "job_posting_id", name="uq_resume_job_analyses_resume_job"),)
+
+    resume_id: uuid_pkg.UUID = Field(
+        foreign_key="resumes.id",
+        nullable=False,
+        index=True,
+    )
+    job_posting_id: uuid_pkg.UUID = Field(
+        foreign_key="job_postings.id",
+        nullable=False,
+        index=True,
+    )
+    result: Dict = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+        description="Full skill-gap response (missing_skills, severity, llm_fit_analysis, etc.) as JSON.",
+    )
+    analyzed_at: datetime = Field(
+        default_factory=datetime.now,
+        nullable=False,
+        sa_column_kwargs={"server_default": text("current_timestamp(0)")},
+        description="When the analysis was run.",
     )
 
 

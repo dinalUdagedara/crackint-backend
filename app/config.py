@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     CV_SCORING_ENABLED: bool = False
     CV_SCORING_MODEL: str = "gpt-4o-mini"
 
+    # Resume–job fit agent: LLM analysis of CV vs job posting (fit score, summary, suggestions)
+    RESUME_JOB_FIT_LLM_ENABLED: bool = False
+    RESUME_JOB_FIT_LLM_MODEL: str = "gpt-4o-mini"
+
     # Cover letter agent: LLM-based cover letter generation
     COVER_LETTER_AGENT_ENABLED: bool = True
     COVER_LETTER_AGENT_MODEL: str = "gpt-4o-mini"
@@ -65,12 +69,19 @@ class Settings(BaseSettings):
     # Google OAuth (for POST /auth/google - verify ID token and create/link user)
     GOOGLE_CLIENT_ID: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
     # AWS
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_DEFAULT_REGION: str = "us-east-1"
+
+    # S3 uploads (cover images, etc.). If set, POST /uploads/image will upload to this bucket.
+    S3_UPLOADS_BUCKET: Optional[str] = None
+    # Region for uploads bucket (defaults to AWS_DEFAULT_REGION if not set)
+    S3_UPLOADS_REGION: Optional[str] = None
+    # Max size for cover/image uploads in MB (default 5)
+    MAX_COVER_IMAGE_SIZE_MB: int = 5
 
     @property
     def DB_URL(self) -> str:

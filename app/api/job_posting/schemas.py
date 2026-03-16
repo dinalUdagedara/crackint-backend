@@ -28,6 +28,17 @@ class JobPostingListItem(BaseModel):
     deadline: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    # Job tracker / job detail (optional)
+    display_order: Optional[int] = None
+    cover_image_url: Optional[str] = None
+    notes: Optional[str] = None
+    questions_to_ask: Optional[str] = None
+    interview_at: Optional[datetime] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    talking_points: Optional[str] = None
+    application_url: Optional[str] = None
+    stage: Optional[str] = None
 
 
 class JobPostingCreate(BaseModel):
@@ -53,6 +64,30 @@ class JobPostingCreate(BaseModel):
         default=None,
         description="Optional job or interview deadline.",
     )
+    cover_image_url: Optional[str] = Field(default=None, description="Optional cover image URL.")
+    notes: Optional[str] = Field(default=None, description="Optional free-form notes.")
+    questions_to_ask: Optional[str] = Field(default=None, description="Questions to ask in the interview.")
+    interview_at: Optional[datetime] = Field(default=None, description="Interview date/time (ISO 8601).")
+    contact_name: Optional[str] = Field(default=None, description="Recruiter/contact name.")
+    contact_email: Optional[str] = Field(default=None, description="Recruiter/contact email.")
+    talking_points: Optional[str] = Field(default=None, description="Key points to mention.")
+    application_url: Optional[str] = Field(default=None, description="Link to job ad or application page.")
+    stage: Optional[str] = Field(default=None, description="Application stage, e.g. saved, applied, interview, offer.")
+
+
+class JobPostingReorderRequest(BaseModel):
+    """Body for PUT /job-postings/reorder: list of job posting IDs in desired order."""
+
+    order: List[uuid_pkg.UUID] = Field(
+        ...,
+        description="Job posting IDs in the desired display order (index = display_order).",
+    )
+
+
+class ReorderResponse(BaseModel):
+    """Payload returned after bulk reorder."""
+
+    updated: bool = Field(..., description="Whether the order was updated.")
 
 
 class DeleteJobPostingResponse(BaseModel):
@@ -80,4 +115,14 @@ class JobPostingUpdate(BaseModel):
         default=None,
         description="Job or interview deadline.",
     )
+    display_order: Optional[int] = Field(default=None, description="User-defined display order.")
+    cover_image_url: Optional[str] = Field(default=None, description="Cover image URL (null to clear).")
+    notes: Optional[str] = Field(default=None, description="Free-form notes.")
+    questions_to_ask: Optional[str] = Field(default=None, description="Questions to ask in the interview.")
+    interview_at: Optional[datetime] = Field(default=None, description="Interview date/time (ISO 8601).")
+    contact_name: Optional[str] = Field(default=None, description="Recruiter/contact name.")
+    contact_email: Optional[str] = Field(default=None, description="Recruiter/contact email.")
+    talking_points: Optional[str] = Field(default=None, description="Key points to mention.")
+    application_url: Optional[str] = Field(default=None, description="Link to job ad or application page.")
+    stage: Optional[str] = Field(default=None, description="Application stage, e.g. saved, applied, interview, offer.")
 

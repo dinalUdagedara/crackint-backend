@@ -1,5 +1,6 @@
 """Schemas for match/skill-gap API."""
 
+from datetime import datetime
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
@@ -11,6 +12,17 @@ class SkillGapAlert(BaseModel):
     type: str = Field(..., description="missing_skill | weak_experience | weak_education")
     message: str = Field(..., description="Human-readable alert message.")
     severity: str = Field(..., description="low | medium | high")
+
+
+class ResumeJobFitAnalysis(BaseModel):
+    """Optional LLM-based resume–job fit analysis (when RESUME_JOB_FIT_LLM_ENABLED and raw text present)."""
+
+    fit_score: float = Field(..., ge=0, le=100, description="How well the resume fits this job (0-100).")
+    summary: str = Field(default="", description="Short narrative summary of fit and gaps.")
+    tailored_suggestions: List[str] = Field(
+        default_factory=list,
+        description="Job-specific improvement or highlight suggestions.",
+    )
 
 
 class SkillGapResponse(BaseModel):
@@ -47,6 +59,14 @@ class SkillGapResponse(BaseModel):
     alerts: List[SkillGapAlert] = Field(
         default_factory=list,
         description="Structured alerts for UI display.",
+    )
+    llm_fit_analysis: ResumeJobFitAnalysis | None = Field(
+        default=None,
+        description="LLM analysis of resume vs job (fit score, summary, tailored suggestions) when enabled and raw text available.",
+    )
+    analyzed_at: datetime | None = Field(
+        default=None,
+        description="When this analysis was run (set when stored or returned from cache).",
     )
 
 

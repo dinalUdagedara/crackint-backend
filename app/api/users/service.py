@@ -4,6 +4,7 @@ Used by GET /users/me/readiness, /readiness/summary, and /readiness/trend.
 """
 
 import uuid as uuid_pkg
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import HTTPException
@@ -59,10 +60,19 @@ async def get_cv_and_gap(
     if resume is None or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found.")
 
-    if (resume.raw_text or "").strip():
+    if resume.cv_score is not None:
+        cv_score = resume.cv_score
+    elif (resume.raw_text or "").strip():
         try:
             result = await score_cv_from_raw_text(resume.raw_text)
             cv_score = result.score
+            # Persist so future readiness calls don't need to call the LLM
+            resume.cv_score = result.score
+            resume.cv_breakdown = result.breakdown
+            resume.cv_suggestions = result.suggestions
+            resume.cv_scored_at = datetime.now()
+            db.add(resume)
+            await db.commit()
         except ValueError:
             pass
 
@@ -307,10 +317,10 @@ async def get_readiness_tracker_items(
                 label = _job_label_from_entities(job.entities)
                 title = f"Readiness for {label} is {score:.0f}%" if score is not None else f"Readiness for {label} — no score yet"
             else:
-                label = session_title or "Session"
+                label = session_title or "Practice session"
                 title = f"Readiness: {label} — {score:.0f}%" if score is not None else f"Readiness: {label}"
         else:
-            label = session_title or "Session"
+            label = session_title or "Practice session"
             title = f"Readiness: {label} — {score:.0f}%" if score is not None else f"Readiness: {label}"
 
         item = {

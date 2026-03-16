@@ -1,15 +1,26 @@
 """Match API: skill-gap analysis between resume and job posting."""
 
+import logging
+from datetime import datetime
 import uuid as uuid_pkg
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.resume_job_fit_agent import analyze_resume_job_fit
 from app.api.deps import get_current_user, get_db
-from app.api.match.schemas import SkillGapAlert, SkillGapRequest, SkillGapResponse
+from app.api.match.schemas import (
+    ResumeJobFitAnalysis,
+    SkillGapAlert,
+    SkillGapRequest,
+    SkillGapResponse,
+)
 from app.common.http_response_model import CommonResponse
-from app.models import JobPosting, Resume, User
+from app.models import JobPosting, Resume, ResumeJobAnalysis, User
 from app.services.skill_gap_service import analyze_skill_gap
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -36,6 +47,48 @@ async def _get_own_job_posting(
     if job is None or job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Job posting not found.")
     return job
+
+
+@router.get(
+    "/skill-gap",
+    response_model=CommonResponse[SkillGapResponse],
+    name="Get stored skill-gap analysis",
+    summary="Return the last saved analysis for this resume+job pair (404 if none).",
+)
+async def get_skill_gap(
+    resume_id: uuid_pkg.UUID = Query(..., description="Resume UUID."),
+    job_posting_id: uuid_pkg.UUID = Query(..., description="Job posting UUID."),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns the stored skill-gap (and optional LLM fit) analysis for this resume and job.
+    Run POST /match/skill-gap first to compute and save an analysis.
+    """
+    await _get_own_resume(resume_id, current_user, db)
+    await _get_own_job_posting(job_posting_id, current_user, db)
+
+    existing = await db.execute(
+        select(ResumeJobAnalysis).where(
+            ResumeJobAnalysis.resume_id == resume_id,
+            ResumeJobAnalysis.job_posting_id == job_posting_id,
+        ).limit(1)
+    )
+    row = existing.scalars().one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No analysis found for this resume and job. Run POST /match/skill-gap to generate one.",
+        )
+
+    payload = SkillGapResponse.model_validate(
+        {**row.result, "analyzed_at": row.analyzed_at}
+    )
+    return CommonResponse(
+        success=True,
+        message="Stored analysis retrieved",
+        payload=payload,
+    )
 
 
 @router.post(
@@ -76,6 +129,21 @@ async def post_skill_gap(
         for a in result["alerts"]
     ]
 
+    llm_fit_analysis: ResumeJobFitAnalysis | None = None
+    resume_text = (resume.raw_text or "").strip()
+    job_text = (job.raw_text or "").strip()
+    if resume_text and job_text:
+        try:
+            fit_result = await analyze_resume_job_fit(resume_text, job_text)
+            llm_fit_analysis = ResumeJobFitAnalysis(
+                fit_score=fit_result.fit_score,
+                summary=fit_result.summary,
+                tailored_suggestions=fit_result.tailored_suggestions,
+            )
+        except ValueError as e:
+            logger.info("Match skill-gap: LLM fit analysis skipped or failed: %s", e)
+
+    analyzed_at = datetime.now()
     payload = SkillGapResponse(
         missing_skills=result["missing_skills"],
         weak_experience=result["weak_experience"],
@@ -85,7 +153,34 @@ async def post_skill_gap(
         suggestions=result["suggestions"],
         severity=result["severity"],
         alerts=alerts,
+        llm_fit_analysis=llm_fit_analysis,
+        analyzed_at=analyzed_at,
     )
+
+    # Persist: upsert ResumeJobAnalysis for this resume+job pair
+    result_dict = payload.model_dump(mode="json", exclude={"analyzed_at"})
+    existing = await db.execute(
+        select(ResumeJobAnalysis).where(
+            ResumeJobAnalysis.resume_id == rid,
+            ResumeJobAnalysis.job_posting_id == jid,
+        ).limit(1)
+    )
+    row = existing.scalars().one_or_none()
+    if row:
+        row.result = result_dict
+        row.analyzed_at = analyzed_at
+        db.add(row)
+    else:
+        db.add(
+            ResumeJobAnalysis(
+                resume_id=rid,
+                job_posting_id=jid,
+                result=result_dict,
+                analyzed_at=analyzed_at,
+            )
+        )
+    await db.commit()
+
     return CommonResponse(
         success=True,
         message="Skill gap analysis completed",

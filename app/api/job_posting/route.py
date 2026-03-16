@@ -2,6 +2,7 @@
 Job posting CRUD endpoints.
 """
 
+from datetime import datetime, timezone
 import uuid as uuid_pkg
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -13,7 +14,9 @@ from app.api.job_posting.schemas import (
     DeleteJobPostingResponse,
     JobPostingCreate,
     JobPostingListItem,
+    JobPostingReorderRequest,
     JobPostingUpdate,
+    ReorderResponse,
 )
 from app.common.http_response_model import CommonResponse, PageMeta
 from app.models import JobPosting, User
@@ -22,6 +25,15 @@ router = APIRouter()
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+
+
+def _naive_utc(dt: datetime | None) -> datetime | None:
+    """Convert timezone-aware datetime to naive UTC for DB columns (TIMESTAMP WITHOUT TIME ZONE)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 @router.get(
@@ -59,7 +71,10 @@ async def list_job_postings(
     q = (
         select(JobPosting)
         .where(JobPosting.user_id == current_user.id)
-        .order_by(JobPosting.updated_at.desc())
+        .order_by(
+            JobPosting.display_order.asc().nulls_last(),
+            JobPosting.updated_at.desc(),
+        )
         .offset(offset)
         .limit(page_size)
     )
@@ -78,6 +93,50 @@ async def list_job_postings(
         message="Job postings retrieved successfully",
         payload=payload,
         meta=meta,
+    )
+
+
+@router.put(
+    "/reorder",
+    response_model=CommonResponse[ReorderResponse],
+    name="Reorder job postings",
+    summary="Set display order for job postings by providing IDs in desired order.",
+)
+async def reorder_job_postings(
+    body: JobPostingReorderRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Update display_order for each job posting to match the index in the request.
+    All IDs must belong to the current user's job postings.
+    """
+    if not body.order:
+        return CommonResponse(
+            success=True,
+            message="No jobs to reorder.",
+            payload=ReorderResponse(updated=True),
+        )
+    # Load all job postings for this user that are in the requested id list
+    q = select(JobPosting).where(
+        JobPosting.user_id == current_user.id,
+        JobPosting.id.in_(body.order),
+    )
+    result = await session.execute(q)
+    rows = {row.id: row for row in result.scalars().all()}
+    if len(rows) != len(body.order):
+        missing = set(body.order) - set(rows.keys())
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job posting(s) not found or not owned by you: {missing}",
+        )
+    for idx, job_id in enumerate(body.order):
+        rows[job_id].display_order = idx
+    await session.commit()
+    return CommonResponse(
+        success=True,
+        message="Job postings reordered successfully",
+        payload=ReorderResponse(updated=True),
     )
 
 
@@ -122,7 +181,16 @@ async def create_job_posting(
         entities=body.entities,
         raw_text=body.raw_text,
         location=body.location,
-        deadline=body.deadline,
+        deadline=_naive_utc(body.deadline),
+        cover_image_url=body.cover_image_url,
+        notes=body.notes,
+        questions_to_ask=body.questions_to_ask,
+        interview_at=_naive_utc(body.interview_at),
+        contact_name=body.contact_name,
+        contact_email=body.contact_email,
+        talking_points=body.talking_points,
+        application_url=body.application_url,
+        stage=body.stage,
     )
     session.add(record)
     await session.commit()
@@ -187,7 +255,27 @@ async def update_job_posting(
     if "location" in sent:
         row.location = body.location
     if "deadline" in sent:
-        row.deadline = body.deadline
+        row.deadline = _naive_utc(body.deadline)
+    if "display_order" in sent:
+        row.display_order = body.display_order
+    if "cover_image_url" in sent:
+        row.cover_image_url = body.cover_image_url
+    if "notes" in sent:
+        row.notes = body.notes
+    if "questions_to_ask" in sent:
+        row.questions_to_ask = body.questions_to_ask
+    if "interview_at" in sent:
+        row.interview_at = _naive_utc(body.interview_at)
+    if "contact_name" in sent:
+        row.contact_name = body.contact_name
+    if "contact_email" in sent:
+        row.contact_email = body.contact_email
+    if "talking_points" in sent:
+        row.talking_points = body.talking_points
+    if "application_url" in sent:
+        row.application_url = body.application_url
+    if "stage" in sent:
+        row.stage = body.stage
     await session.commit()
     await session.refresh(row)
     return CommonResponse(

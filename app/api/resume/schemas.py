@@ -18,6 +18,8 @@ class ResumeListItem(BaseModel):
     user_id: Optional[uuid_pkg.UUID] = None
     entities: Dict[str, List[str]] = Field(..., description="NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE.")
     raw_text: Optional[str] = None
+    cv_score: Optional[float] = None
+    cv_scored_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -86,6 +88,10 @@ class ResumeScoreResponse(BaseModel):
     suggestions: List[str] = Field(
         default_factory=list,
         description="Actionable improvement suggestions.",
+    )
+    scored_at: Optional[datetime] = Field(
+        default=None,
+        description="When this score was computed (set when stored or returned from cache).",
     )
 
 

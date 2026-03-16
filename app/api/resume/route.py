@@ -4,6 +4,8 @@ Resume upload, entity extraction, and update endpoints.
 
 import logging
 import uuid as uuid_pkg
+from datetime import datetime
+from typing import Optional
 
 from fastapi import (
     APIRouter,
@@ -118,6 +120,22 @@ async def get_resume(
     )
 
 
+def _save_cv_score_to_resume(
+    resume: Resume,
+    score: float,
+    breakdown: dict,
+    suggestions: list,
+    scored_at,
+    session: AsyncSession,
+) -> None:
+    """Update resume with latest CV score and commit."""
+    resume.cv_score = score
+    resume.cv_breakdown = breakdown
+    resume.cv_suggestions = suggestions
+    resume.cv_scored_at = scored_at
+    session.add(resume)
+
+
 @router.post(
     "/score",
     response_model=CommonResponse[ResumeScoreResponse],
@@ -126,11 +144,17 @@ async def get_resume(
 )
 async def post_resume_score(
     file: UploadFile = File(..., description="Resume PDF or image (PNG, JPEG, WebP)"),
+    resume_id: Optional[uuid_pkg.UUID] = Query(
+        default=None,
+        description="If provided, save the score to this resume (must be owned by you).",
+    ),
     current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
 ):
     """
-    Upload a CV file (PDF or image). The file is passed directly to the LLM vision model
-    for holistic analysis. Returns score (0-100), breakdown, and suggestions.
+    Upload a CV file (PDF or image). The file is passed to the LLM vision model
+    for analysis. Returns score (0-100), breakdown, and suggestions.
+    If resume_id is provided, the score is saved to that resume for future use.
     Requires CV_SCORING_ENABLED=true and OPENAI_API_KEY.
     """
     if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
@@ -149,11 +173,29 @@ async def post_resume_score(
         result = await score_cv_from_file(content, content_type)
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+
+    scored_at = datetime.now()
     payload = ResumeScoreResponse(
         score=result.score,
         breakdown=result.breakdown,
         suggestions=result.suggestions,
+        scored_at=scored_at,
     )
+
+    if resume_id is not None:
+        resume = await session.get(Resume, resume_id)
+        if resume is None or resume.user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Resume not found.")
+        _save_cv_score_to_resume(
+            resume,
+            result.score,
+            result.breakdown,
+            result.suggestions,
+            scored_at,
+            session,
+        )
+        await session.commit()
+
     return CommonResponse(
         success=True,
         message="CV scored successfully",
@@ -165,41 +207,72 @@ async def post_resume_score(
     "/{resume_id}/score",
     response_model=CommonResponse[ResumeScoreResponse],
     name="Score resume by ID",
-    summary="Score an existing resume using its stored raw text.",
+    summary="Return stored CV score or run LLM and save. Uses stored raw_text when running LLM.",
 )
 async def get_resume_score(
     resume_id: uuid_pkg.UUID = Path(..., description="Resume ID."),
+    force: bool = Query(
+        False,
+        description="If true, re-run the LLM to re-score and overwrite the stored score.",
+    ),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """
-    Score an existing resume. Uses the stored raw_text (no file). Best results come from
-    POST /score with file upload. Requires CV_SCORING_ENABLED=true and OPENAI_API_KEY.
+    Returns the latest CV score for this resume. If a score is already stored and
+    force is false, it is returned without calling the LLM. Otherwise (no score, or
+    force=true) the LLM is run (using stored raw_text), the result is saved to the
+    resume, and returned.
     """
     resume = await session.get(Resume, resume_id)
     if resume is None or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found.")
+
+    if (
+        not force
+        and resume.cv_score is not None
+        and resume.cv_scored_at is not None
+    ):
+        payload = ResumeScoreResponse(
+            score=resume.cv_score,
+            breakdown=resume.cv_breakdown or {},
+            suggestions=resume.cv_suggestions or [],
+            scored_at=resume.cv_scored_at,
+        )
+        return CommonResponse(
+            success=True,
+            message="CV score retrieved (cached)",
+            payload=payload,
+        )
+
     if not (resume.raw_text or "").strip():
         raise HTTPException(
             status_code=400,
             detail="Resume has no text to analyze. Use POST /score with file upload instead.",
         )
     text_len = len((resume.raw_text or "").strip())
-    text_preview = (resume.raw_text or "").strip()[:80].replace("\n", " ")
-    logger.info(
-        "CV score: resume_id=%s, raw_text_len=%d, preview=%s...",
-        resume_id,
-        text_len,
-        text_preview,
-    )
+    logger.info("CV score: resume_id=%s, raw_text_len=%d, running LLM", resume_id, text_len)
     try:
         result = await score_cv_from_raw_text(resume.raw_text)
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+
+    scored_at = datetime.now()
+    _save_cv_score_to_resume(
+        resume,
+        result.score,
+        result.breakdown,
+        result.suggestions,
+        scored_at,
+        session,
+    )
+    await session.commit()
+
     payload = ResumeScoreResponse(
         score=result.score,
         breakdown=result.breakdown,
         suggestions=result.suggestions,
+        scored_at=scored_at,
     )
     return CommonResponse(
         success=True,
