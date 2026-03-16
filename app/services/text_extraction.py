@@ -32,9 +32,45 @@ def _detect_content_type(content: bytes) -> Optional[str]:
     return None
 
 
+def _extract_text_from_pdf_via_ocr(file_content: bytes) -> str:
+    """
+    Extract text from PDF by rendering each page to an image and running Tesseract OCR.
+    """
+    from app.services.ocr import extract_text_from_image
+
+    doc = pymupdf.open(stream=file_content, filetype="pdf")
+    try:
+        parts: list[str] = []
+        for page in doc:
+            # Render page at 200 DPI for reasonable OCR quality
+            pix = page.get_pixmap(dpi=200, alpha=False)
+            png_bytes = pix.tobytes("png")
+            page_text = extract_text_from_image(png_bytes, content_type="image/png")
+            if page_text.strip():
+                parts.append(page_text.strip())
+        return "\n\n".join(parts).strip() or ""
+    finally:
+        doc.close()
+
+
+def _extract_text_from_pdf_direct(file_content: bytes) -> str:
+    """Extract embedded text from PDF (no OCR). Returns empty if no text layer."""
+    doc = pymupdf.open(stream=file_content, filetype="pdf")
+    try:
+        parts: list[str] = []
+        for page in doc:
+            text = page.get_text()
+            if text:
+                parts.append(text.strip())
+        return "\n\n".join(parts).strip() or ""
+    finally:
+        doc.close()
+
+
 def extract_text_from_pdf(file_content: bytes) -> str:
     """
     Extract plain text from PDF bytes.
+    Always tries OCR first (render pages + Tesseract); if OCR returns empty, falls back to embedded text.
 
     Args:
         file_content: Raw PDF file bytes.
@@ -48,20 +84,13 @@ def extract_text_from_pdf(file_content: bytes) -> str:
     if not file_content or len(file_content) < 4:
         raise ValueError("Empty or invalid PDF content")
 
-    try:
-        doc = pymupdf.open(stream=file_content, filetype="pdf")
-    except Exception as e:
-        raise ValueError(f"Invalid PDF: {e}") from e
+    # Always try OCR first; fall back to embedded text if OCR returns empty
+    result = _extract_text_from_pdf_via_ocr(file_content)
+    # Fall back to embedded text if OCR produced nothing
+    if not result:
+        result = _extract_text_from_pdf_direct(file_content)
 
-    try:
-        parts: list[str] = []
-        for page in doc:
-            text = page.get_text()
-            if text:
-                parts.append(text.strip())
-        return "\n\n".join(parts).strip() or ""
-    finally:
-        doc.close()
+    return result
 
 
 def extract_text_from_file(content: bytes, content_type: Optional[str] = None) -> str:
