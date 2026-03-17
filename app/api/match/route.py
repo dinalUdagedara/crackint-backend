@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.resume_job_fit_agent import analyze_resume_job_fit
 from app.api.deps import get_current_user, get_db
 from app.api.match.schemas import (
+    LocationSuitability,
     ResumeJobFitAnalysis,
     SkillGapAlert,
     SkillGapRequest,
@@ -18,7 +19,7 @@ from app.api.match.schemas import (
 )
 from app.common.http_response_model import CommonResponse
 from app.models import JobPosting, Resume, ResumeJobAnalysis, User
-from app.services.skill_gap_service import analyze_skill_gap
+from app.services.skill_gap_service import analyze_location_suitability, analyze_skill_gap
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,88 @@ async def post_skill_gap(
         job_entities=job.entities or {},
     )
 
+    # Candidate location: request body (profile/CV) or first resume LOCATION entity if present
+    candidate_location = body.candidate_location
+    if not candidate_location and resume.entities:
+        loc_entities = (resume.entities or {}).get("LOCATION", [])
+        if loc_entities and isinstance(loc_entities[0], str):
+            candidate_location = loc_entities[0]
+
+    # Job location display for fit agent and fallback
+    job_entities = job.entities or {}
+    job_loc_list = job_entities.get("LOCATION", []) or []
+    job_location_display = (job.location or "").strip()
+    if not job_location_display and job_loc_list:
+        job_location_display = ", ".join(str(x).strip() for x in job_loc_list if x)
+
+    llm_fit_analysis: ResumeJobFitAnalysis | None = None
+    location_suitability: LocationSuitability
+    loc_alert: SkillGapAlert | None = None
+    resume_text = (resume.raw_text or "").strip()
+    job_text = (job.raw_text or "").strip()
+
+    if resume_text and job_text:
+        try:
+            fit_result = await analyze_resume_job_fit(
+                resume_text,
+                job_text,
+                job_location_display=job_location_display or None,
+                candidate_location=candidate_location,
+            )
+            llm_fit_analysis = ResumeJobFitAnalysis(
+                fit_score=fit_result.fit_score,
+                summary=fit_result.summary,
+                tailored_suggestions=fit_result.tailored_suggestions,
+            )
+            if fit_result.location_suitability:
+                location_suitability = LocationSuitability(**fit_result.location_suitability)
+                if fit_result.location_alert:
+                    loc_alert = SkillGapAlert(
+                        type=fit_result.location_alert["type"],
+                        message=fit_result.location_alert["message"],
+                        severity=fit_result.location_alert["severity"],
+                    )
+            else:
+                loc_payload, loc_alert_dict = analyze_location_suitability(
+                    job_location_str=job.location,
+                    job_entities=job_entities,
+                    candidate_location=candidate_location,
+                )
+                location_suitability = LocationSuitability(**loc_payload)
+                if loc_alert_dict:
+                    loc_alert = SkillGapAlert(
+                        type=loc_alert_dict["type"],
+                        message=loc_alert_dict["message"],
+                        severity=loc_alert_dict["severity"],
+                    )
+        except ValueError as e:
+            logger.info("Match skill-gap: LLM fit analysis skipped or failed: %s", e)
+            loc_payload, loc_alert_dict = analyze_location_suitability(
+                job_location_str=job.location,
+                job_entities=job_entities,
+                candidate_location=candidate_location,
+            )
+            location_suitability = LocationSuitability(**loc_payload)
+            if loc_alert_dict:
+                loc_alert = SkillGapAlert(
+                    type=loc_alert_dict["type"],
+                    message=loc_alert_dict["message"],
+                    severity=loc_alert_dict["severity"],
+                )
+    else:
+        loc_payload, loc_alert_dict = analyze_location_suitability(
+            job_location_str=job.location,
+            job_entities=job_entities,
+            candidate_location=candidate_location,
+        )
+        location_suitability = LocationSuitability(**loc_payload)
+        if loc_alert_dict:
+            loc_alert = SkillGapAlert(
+                type=loc_alert_dict["type"],
+                message=loc_alert_dict["message"],
+                severity=loc_alert_dict["severity"],
+            )
+
     alerts = [
         SkillGapAlert(
             type=a["type"],
@@ -128,20 +211,8 @@ async def post_skill_gap(
         )
         for a in result["alerts"]
     ]
-
-    llm_fit_analysis: ResumeJobFitAnalysis | None = None
-    resume_text = (resume.raw_text or "").strip()
-    job_text = (job.raw_text or "").strip()
-    if resume_text and job_text:
-        try:
-            fit_result = await analyze_resume_job_fit(resume_text, job_text)
-            llm_fit_analysis = ResumeJobFitAnalysis(
-                fit_score=fit_result.fit_score,
-                summary=fit_result.summary,
-                tailored_suggestions=fit_result.tailored_suggestions,
-            )
-        except ValueError as e:
-            logger.info("Match skill-gap: LLM fit analysis skipped or failed: %s", e)
+    if loc_alert:
+        alerts.append(loc_alert)
 
     analyzed_at = datetime.now()
     payload = SkillGapResponse(
@@ -154,6 +225,7 @@ async def post_skill_gap(
         severity=result["severity"],
         alerts=alerts,
         llm_fit_analysis=llm_fit_analysis,
+        location_suitability=location_suitability,
         analyzed_at=analyzed_at,
     )
 
