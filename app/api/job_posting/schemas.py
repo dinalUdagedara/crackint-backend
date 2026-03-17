@@ -3,7 +3,7 @@ Request/response schemas for job posting APIs.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import uuid as uuid_pkg
 from pydantic import BaseModel, ConfigDict, Field
@@ -88,6 +88,24 @@ class ReorderResponse(BaseModel):
     """Payload returned after bulk reorder."""
 
     updated: bool = Field(..., description="Whether the order was updated.")
+
+
+class JobPostingNearDeadlineItem(BaseModel):
+    """Job posting with its next upcoming milestone (deadline or interview) for notification/reminder use."""
+
+    job: JobPostingListItem = Field(..., description="The job posting.")
+    next_milestone_date: datetime = Field(
+        ...,
+        description="The date of the upcoming milestone (deadline or interview).",
+    )
+    next_milestone_type: Literal["deadline", "interview"] = Field(
+        ...,
+        description="Whether the milestone is an application deadline or an interview date.",
+    )
+    days_until: int = Field(
+        ...,
+        description="Whole days until the milestone (0 = today, 1 = tomorrow).",
+    )
 
 
 class DeleteJobPostingResponse(BaseModel):
