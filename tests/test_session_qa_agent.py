@@ -6,6 +6,11 @@ Mocks OpenAI so no API key or network required.
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
+from app.agents.fallback_interview_questions import (
+    FALLBACK_ANSWER_EVAL_FEEDBACK,
+    FALLBACK_QUESTION_BANK,
+    pick_fallback_question,
+)
 from app.agents.session_qa_agent import (
     _is_session_qa_available,
     generate_next_question,
@@ -141,6 +146,83 @@ class TestGenerateNextQuestion:
         assert result.question == "What is your greatest strength?"
         assert result.difficulty == "easy"
 
+    @patch("openai.AsyncOpenAI")
+    @patch("app.agents.session_qa_agent._is_session_qa_available")
+    async def test_uses_fallback_when_llm_raises(self, mock_available, mock_openai_cls):
+        mock_available.return_value = True
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("API down"))
+        mock_openai_cls.return_value = mock_client
+
+        with patch("app.agents.session_qa_agent.settings") as mock_settings:
+            mock_settings.OPENAI_API_KEY = "sk-fake"
+            mock_settings.SESSION_QA_AGENT_MODEL = "gpt-4o-mini"
+            mock_settings.SESSION_QA_AGENT_TEMPERATURE = 0.7
+
+            result = await generate_next_question(
+                role_level="ASE",
+                job_entities={},
+                resume_entities={},
+                previous_messages=[],
+            )
+
+        assert isinstance(result, QuestionGenerationResult)
+        assert result.question
+        assert any(
+            e["question"] == result.question for e in FALLBACK_QUESTION_BANK
+        ) or "recent project or experience" in result.question.lower()
+
+    @patch("openai.AsyncOpenAI")
+    @patch("app.agents.session_qa_agent._is_session_qa_available")
+    async def test_uses_fallback_when_llm_returns_invalid_json(self, mock_available, mock_openai_cls):
+        mock_available.return_value = True
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=MagicMock(
+                choices=[MagicMock(message=MagicMock(content="not json"))]
+            )
+        )
+        mock_openai_cls.return_value = mock_client
+
+        with patch("app.agents.session_qa_agent.settings") as mock_settings:
+            mock_settings.OPENAI_API_KEY = "sk-fake"
+            mock_settings.SESSION_QA_AGENT_MODEL = "gpt-4o-mini"
+            mock_settings.SESSION_QA_AGENT_TEMPERATURE = 0.7
+
+            result = await generate_next_question(
+                role_level="ASE",
+                job_entities={},
+                resume_entities={},
+                previous_messages=[],
+            )
+
+        assert isinstance(result, QuestionGenerationResult)
+        assert result.question
+
+
+class TestPickFallbackQuestion:
+    """Static fallback bank selection and dedup."""
+
+    def test_skips_question_already_in_session(self):
+        first = FALLBACK_QUESTION_BANK[0]["question"]
+        q, _, _ = pick_fallback_question(
+            previous_messages=[
+                {"sender": "ASSISTANT", "type": "QUESTION", "content": first},
+            ],
+            question_index=0,
+        )
+        assert q != first
+
+    def test_prefers_technical_when_requested(self):
+        q, diff, qtype = pick_fallback_question(
+            previous_messages=[],
+            question_index=0,
+            question_type="technical",
+            suggested_difficulty="easy",
+        )
+        assert qtype == "technical"
+        assert diff in ("easy", "medium", "hard", None)
+
 
 @pytest.mark.asyncio
 class TestEvaluateAnswer:
@@ -226,6 +308,32 @@ class TestEvaluateAnswer:
             )
 
         assert result.score == 100
+
+    @patch("openai.AsyncOpenAI")
+    @patch("app.agents.session_qa_agent._is_session_qa_available")
+    async def test_returns_fallback_when_llm_raises(self, mock_available, mock_openai_cls):
+        mock_available.return_value = True
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("API down"))
+        mock_openai_cls.return_value = mock_client
+
+        with patch("app.agents.session_qa_agent.settings") as mock_settings:
+            mock_settings.OPENAI_API_KEY = "sk-fake"
+            mock_settings.SESSION_QA_AGENT_MODEL = "gpt-4o-mini"
+            mock_settings.SESSION_QA_AGENT_TEMPERATURE = 0.7
+
+            result = await evaluate_answer(
+                question="Describe a bug you fixed.",
+                answer="I fixed a null pointer in production.",
+                role_level="ASE",
+                job_entities={},
+                resume_entities={},
+            )
+
+        assert isinstance(result, AnswerEvaluationResult)
+        assert result.feedback == FALLBACK_ANSWER_EVAL_FEEDBACK
+        assert result.score == 50
+        assert "offline" in result.dimension_tags
 
 
 @pytest.mark.asyncio

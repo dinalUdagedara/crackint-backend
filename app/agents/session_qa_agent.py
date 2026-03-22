@@ -9,6 +9,10 @@ from typing import Dict, List, Optional, Any
 
 from pydantic import BaseModel, Field
 
+from app.agents.fallback_interview_questions import (
+    FALLBACK_ANSWER_EVAL_FEEDBACK,
+    pick_fallback_question,
+)
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -101,7 +105,8 @@ async def generate_next_question(
     Call LLM to generate the next interview question.
     question_index: 0-based count of QUESTION messages already in the session (for difficulty curve).
     suggested_difficulty: preferred difficulty for this position (easy/medium/hard); session progresses easier to harder.
-    Raises ValueError if agent disabled/API key missing or LLM fails.
+    If the LLM is unavailable or returns invalid output, uses a static fallback bank (see fallback_interview_questions).
+    Raises ValueError only if Session Q&A is disabled (no API key / agent off).
     """
     if not _is_session_qa_available():
         raise ValueError(
@@ -135,13 +140,23 @@ Previous messages in this session (do not repeat these as questions):
 
 Requested question type (or leave empty to choose): {qtype_str}"""
 
+    def _fallback_result() -> QuestionGenerationResult:
+        fq, fd, ft = pick_fallback_question(
+            previous_messages=previous_messages,
+            question_index=question_index,
+            question_type=question_type,
+            suggested_difficulty=suggested_difficulty,
+        )
+        logger.info("Session Q&A: using static fallback question (LLM unavailable or failed).")
+        return QuestionGenerationResult(question=fq, difficulty=fd, question_type=ft)
+
     try:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     except Exception as e:
         logger.error("Session Q&A: could not create OpenAI client: %s", e)
-        raise ValueError("OpenAI client unavailable.") from e
+        return _fallback_result()
 
     model = getattr(settings, "SESSION_QA_AGENT_MODEL", "gpt-4o-mini")
     temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
@@ -157,13 +172,13 @@ Requested question type (or leave empty to choose): {qtype_str}"""
         )
         content = (response.choices[0].message.content or "").strip()
         if not content:
-            raise ValueError("LLM returned empty content.")
+            return _fallback_result()
 
         content = _strip_json_fence(content)
         parsed = json.loads(content)
         question = (parsed.get("question") or "").strip()
         if not question:
-            raise ValueError("LLM response missing 'question' field.")
+            return _fallback_result()
 
         return QuestionGenerationResult(
             question=question,
@@ -172,12 +187,10 @@ Requested question type (or leave empty to choose): {qtype_str}"""
         )
     except json.JSONDecodeError as e:
         logger.warning("Session Q&A question gen: invalid JSON from LLM: %s", e)
-        raise ValueError("Invalid response from question generator.") from e
+        return _fallback_result()
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise
         logger.warning("Session Q&A question gen: LLM call failed: %s", e)
-        raise ValueError("Question generation failed.") from e
+        return _fallback_result()
 
 
 # --- Greeting / off-topic / skip (ChatGPT-style, LLM-only) ---
@@ -308,6 +321,16 @@ class AnswerEvaluationResult(BaseModel):
     )
 
 
+def _fallback_eval_result() -> AnswerEvaluationResult:
+    """Placeholder when the evaluator LLM cannot be used."""
+    logger.info("Session Q&A: using offline fallback for answer evaluation.")
+    return AnswerEvaluationResult(
+        feedback=FALLBACK_ANSWER_EVAL_FEEDBACK,
+        score=50,
+        dimension_tags=["offline", "general"],
+    )
+
+
 async def evaluate_answer(
     question: str,
     answer: str,
@@ -317,7 +340,8 @@ async def evaluate_answer(
 ) -> AnswerEvaluationResult:
     """
     Call LLM to evaluate the candidate's answer.
-    Raises ValueError if agent disabled/API key missing or LLM fails.
+    Raises ValueError if Session Q&A is disabled (no API key / agent off).
+    If the LLM is unreachable or returns invalid output, returns offline placeholder feedback (score 50).
     """
     if not _is_session_qa_available():
         raise ValueError(
@@ -347,7 +371,7 @@ Candidate background (for relevance):
         client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
     except Exception as e:
         logger.error("Session Q&A: could not create OpenAI client: %s", e)
-        raise ValueError("OpenAI client unavailable.") from e
+        return _fallback_eval_result()
 
     model = getattr(settings, "SESSION_QA_AGENT_MODEL", "gpt-4o-mini")
     temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
@@ -363,17 +387,17 @@ Candidate background (for relevance):
         )
         content = (response.choices[0].message.content or "").strip()
         if not content:
-            raise ValueError("LLM returned empty content.")
+            return _fallback_eval_result()
 
         content = _strip_json_fence(content)
         parsed = json.loads(content)
         feedback = (parsed.get("feedback") or "").strip()
         if not feedback:
-            raise ValueError("LLM response missing 'feedback' field.")
+            return _fallback_eval_result()
 
         raw_score = parsed.get("score")
         if raw_score is None:
-            raise ValueError("LLM response missing 'score' field.")
+            return _fallback_eval_result()
         try:
             score = int(raw_score)
         except (TypeError, ValueError):
@@ -392,12 +416,10 @@ Candidate background (for relevance):
         )
     except json.JSONDecodeError as e:
         logger.warning("Session Q&A answer eval: invalid JSON from LLM: %s", e)
-        raise ValueError("Invalid response from answer evaluator.") from e
+        return _fallback_eval_result()
     except Exception as e:
-        if isinstance(e, ValueError):
-            raise
         logger.warning("Session Q&A answer eval: LLM call failed: %s", e)
-        raise ValueError("Answer evaluation failed.") from e
+        return _fallback_eval_result()
 
 
 # --- Session summary (strengths / areas_for_improvement) ---
