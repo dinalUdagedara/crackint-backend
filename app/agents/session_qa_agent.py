@@ -9,10 +9,7 @@ from typing import Dict, List, Optional, Any
 
 from pydantic import BaseModel, Field
 
-from app.agents.fallback_interview_questions import (
-    FALLBACK_ANSWER_EVAL_FEEDBACK,
-    pick_fallback_question,
-)
+from app.agents.fallback import pick_fallback_question
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -105,7 +102,7 @@ async def generate_next_question(
     Call LLM to generate the next interview question.
     question_index: 0-based count of QUESTION messages already in the session (for difficulty curve).
     suggested_difficulty: preferred difficulty for this position (easy/medium/hard); session progresses easier to harder.
-    If the LLM is unavailable or returns invalid output, uses a static fallback bank (see fallback_interview_questions).
+    If the LLM is unavailable or returns invalid output, uses a static fallback bank (see app.agents.fallback).
     Raises ValueError only if Session Q&A is disabled (no API key / agent off).
     """
     if not _is_session_qa_available():
@@ -321,11 +318,18 @@ class AnswerEvaluationResult(BaseModel):
     )
 
 
+# Kept here (not in app.agents.fallback) — fallback package is questions-only.
+_FALLBACK_EVAL_PLACEHOLDER_FEEDBACK = (
+    "Personalized feedback is temporarily unavailable because the AI scoring service did not respond. "
+    "Your answer was still saved. You can continue practicing; try again in a moment for a real score."
+)
+
+
 def _fallback_eval_result() -> AnswerEvaluationResult:
-    """Placeholder when the evaluator LLM cannot be used."""
-    logger.info("Session Q&A: using offline fallback for answer evaluation.")
+    """Placeholder when the evaluator LLM cannot be used (no heuristic scoring)."""
+    logger.info("Session Q&A: using placeholder feedback (evaluator LLM unavailable).")
     return AnswerEvaluationResult(
-        feedback=FALLBACK_ANSWER_EVAL_FEEDBACK,
+        feedback=_FALLBACK_EVAL_PLACEHOLDER_FEEDBACK,
         score=50,
         dimension_tags=["offline", "general"],
     )

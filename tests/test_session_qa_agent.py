@@ -6,11 +6,7 @@ Mocks OpenAI so no API key or network required.
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from app.agents.fallback_interview_questions import (
-    FALLBACK_ANSWER_EVAL_FEEDBACK,
-    FALLBACK_QUESTION_BANK,
-    pick_fallback_question,
-)
+from app.agents.fallback import FALLBACK_QUESTION_BANK, pick_fallback_question
 from app.agents.session_qa_agent import (
     _is_session_qa_available,
     generate_next_question,
@@ -331,7 +327,7 @@ class TestEvaluateAnswer:
             )
 
         assert isinstance(result, AnswerEvaluationResult)
-        assert result.feedback == FALLBACK_ANSWER_EVAL_FEEDBACK
+        assert "personalized feedback" in result.feedback.lower()
         assert result.score == 50
         assert "offline" in result.dimension_tags
 

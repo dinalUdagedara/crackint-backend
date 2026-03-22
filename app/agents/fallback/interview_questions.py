@@ -1,8 +1,6 @@
 """
 Static fallback interview questions when the LLM is unavailable or returns invalid output.
 Generic, domain-agnostic prompts — expand or edit FALLBACK_QUESTION_BANK as needed.
-
-Also provides placeholder feedback when answer scoring cannot call the LLM (same outages / bad keys).
 """
 
 from __future__ import annotations
@@ -12,12 +10,6 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
-
-# Shown when evaluate_answer cannot reach the model (401, timeout, invalid JSON, etc.).
-FALLBACK_ANSWER_EVAL_FEEDBACK = (
-    "Personalized feedback is temporarily unavailable because the AI scoring service did not respond. "
-    "Your answer was still saved. You can continue practicing; try again in a moment for a real score."
-)
 
 # Each entry: question text + optional difficulty / type for filtering (matches session QA conventions).
 FALLBACK_QUESTION_BANK: List[Dict[str, str]] = [
