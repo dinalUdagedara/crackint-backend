@@ -48,13 +48,18 @@ class TimestampModel(SQLModel):
 
 
 class User(UUIDModel, TimestampModel, table=True):
-    """User table: id, name, email, hashed_password, timestamps."""
+    """User table: id, name, email, hashed_password, timestamps, admin flag."""
 
     __tablename__ = "users"
 
     name: str = Field(nullable=False)
     email: str = Field(nullable=False, index=True, unique=True)
     hashed_password: str = Field(nullable=False)
+    is_admin: bool = Field(
+        default=False,
+        nullable=False,
+        sa_column_kwargs={"server_default": text("false")},
+    )
 
 
 class Resume(UUIDModel, TimestampModel, table=True):
