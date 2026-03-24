@@ -8,12 +8,11 @@ from app.common.http_response_model import CommonResponse
 from app.api.job.schemas import JobExtractResponse
 from app.api.job import service as job_service
 from app.config import settings
-from app.services.text_extraction import SUPPORTED_FILE_CONTENT_TYPES
+from app.services.text_extraction import UNSUPPORTED_UPLOAD_DETAIL, upload_content_type_allowed
 
 router = APIRouter()
 
 MAX_BYTES = (settings.MAX_UPLOAD_SIZE_MB or 10) * 1024 * 1024
-ALLOWED_CONTENT_TYPES = SUPPORTED_FILE_CONTENT_TYPES
 
 
 @router.post(
@@ -46,14 +45,16 @@ async def extract_job_entities(
     if file is None and (text is None or not text.strip()):
         raise HTTPException(
             status_code=400,
-            detail="Send either a file (PDF or image) or form field 'text' with job description content.",
+            detail="Send either a file (PDF, image, or .docx) or form field 'text' with job description content.",
         )
 
     if file is not None:
-        if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        if file.content_type and not upload_content_type_allowed(
+            file.content_type, file.filename
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
+                detail=UNSUPPORTED_UPLOAD_DETAIL,
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -63,7 +64,7 @@ async def extract_job_entities(
             )
         content_type = file.content_type or "application/octet-stream"
         raw_text, entities = await job_service.extract_entities_from_file_bytes(
-            content, content_type, run_agent=validate
+            content, content_type, run_agent=validate, filename=file.filename
         )
         payload = JobExtractResponse(entities=entities, raw_text=raw_text)
     else:

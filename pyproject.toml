@@ -32,6 +32,7 @@ pytesseract = ">=0.3.10"
 python-socketio = "^5.16.1"
 boto3 = "^1.42.63"
 amazon-transcribe = "^0.6.4"
+python-docx = ">=1.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

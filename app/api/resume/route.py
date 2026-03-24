@@ -37,12 +37,11 @@ from app.common.http_response_model import CommonResponse, PageMeta
 from app.config import settings
 from app.models import Resume, User
 from app.services.cv_scoring import score_cv_from_file, score_cv_from_raw_text
-from app.services.text_extraction import SUPPORTED_FILE_CONTENT_TYPES
+from app.services.text_extraction import UNSUPPORTED_UPLOAD_DETAIL, upload_content_type_allowed
 
 router = APIRouter()
 
 MAX_BYTES = (settings.MAX_UPLOAD_SIZE_MB or 10) * 1024 * 1024
-ALLOWED_CONTENT_TYPES = SUPPORTED_FILE_CONTENT_TYPES
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
@@ -140,10 +139,12 @@ def _save_cv_score_to_resume(
     "/score",
     response_model=CommonResponse[ResumeScoreResponse],
     name="Score CV from file",
-    summary="Score a CV by uploading PDF or image. Pass directly to LLM vision model.",
+    summary="Score a CV from PDF, image (vision), or Word (.docx) as text.",
 )
 async def post_resume_score(
-    file: UploadFile = File(..., description="Resume PDF or image (PNG, JPEG, WebP)"),
+    file: UploadFile = File(
+        ..., description="Resume PDF, image (PNG, JPEG, WebP), or Word (.docx)"
+    ),
     resume_id: Optional[uuid_pkg.UUID] = Query(
         default=None,
         description="If provided, save the score to this resume (must be owned by you).",
@@ -152,15 +153,17 @@ async def post_resume_score(
     session: AsyncSession = Depends(get_db),
 ):
     """
-    Upload a CV file (PDF or image). The file is passed to the LLM vision model
-    for analysis. Returns score (0-100), breakdown, and suggestions.
+    Upload a CV file. PDF and images are analyzed with the vision model; .docx files
+    are converted to text and scored with the text model. Returns score (0-100), breakdown, and suggestions.
     If resume_id is provided, the score is saved to that resume for future use.
     Requires CV_SCORING_ENABLED=true and OPENAI_API_KEY.
     """
-    if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+    if file.content_type and not upload_content_type_allowed(
+        file.content_type, file.filename
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
+            detail=UNSUPPORTED_UPLOAD_DETAIL,
         )
     content = await file.read()
     if len(content) > MAX_BYTES:
@@ -170,7 +173,7 @@ async def post_resume_score(
         )
     content_type = file.content_type or "application/octet-stream"
     try:
-        result = await score_cv_from_file(content, content_type)
+        result = await score_cv_from_file(content, content_type, file.filename)
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
 
@@ -319,14 +322,16 @@ async def preview_resume_extract(
         logger.warning("Resume preview-extract: 400 - neither file nor text provided")
         raise HTTPException(
             status_code=400,
-            detail="Send either a file (PDF or image) or form field 'text' with resume content.",
+            detail="Send either a file (PDF, image, or .docx) or form field 'text' with resume content.",
         )
 
     if file is not None:
-        if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        if file.content_type and not upload_content_type_allowed(
+            file.content_type, file.filename
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
+                detail=UNSUPPORTED_UPLOAD_DETAIL,
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -336,7 +341,7 @@ async def preview_resume_extract(
             )
         content_type = file.content_type or "application/octet-stream"
         raw_text, entities = await resume_service.extract_entities_from_file_bytes(
-            content, content_type, run_agent=validate
+            content, content_type, run_agent=validate, filename=file.filename
         )
         payload = ResumeExtractPreviewResponse(
             extracted_text=raw_text, entities=entities
@@ -400,17 +405,19 @@ async def extract_resume_entities(
         logger.warning("Resume extract: 400 - neither file nor text provided")
         raise HTTPException(
             status_code=400,
-            detail="Send either a file (PDF or image) or form field 'text' with resume content.",
+            detail="Send either a file (PDF, image, or .docx) or form field 'text' with resume content.",
         )
 
     if file is not None:
-        if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        if file.content_type and not upload_content_type_allowed(
+            file.content_type, file.filename
+        ):
             logger.warning(
                 "Resume extract: 400 - invalid content type %s", file.content_type
             )
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
+                detail=UNSUPPORTED_UPLOAD_DETAIL,
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -423,7 +430,7 @@ async def extract_resume_entities(
             )
         content_type = file.content_type or "application/octet-stream"
         raw_text, entities = await resume_service.extract_entities_from_file_bytes(
-            content, content_type, run_agent=validate
+            content, content_type, run_agent=validate, filename=file.filename
         )
         payload = ResumeExtractResponse(entities=entities, raw_text=raw_text)
     else:
@@ -492,7 +499,7 @@ async def update_resume(
     if file is None and (text is None or not text.strip()):
         raise HTTPException(
             status_code=400,
-            detail="Send either a file (PDF) or form field 'text' with resume content.",
+            detail="Send either a file (PDF, image, or .docx) or form field 'text' with resume content.",
         )
 
     resume = await session.get(Resume, resume_id)
@@ -500,10 +507,12 @@ async def update_resume(
         raise HTTPException(status_code=404, detail="Resume not found.")
 
     if file is not None:
-        if file.content_type and file.content_type not in ALLOWED_CONTENT_TYPES:
+        if file.content_type and not upload_content_type_allowed(
+            file.content_type, file.filename
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Only PDF and images (PNG, JPEG, WebP) are accepted.",
+                detail=UNSUPPORTED_UPLOAD_DETAIL,
             )
         content = await file.read()
         if len(content) > MAX_BYTES:
@@ -513,7 +522,7 @@ async def update_resume(
             )
         content_type = file.content_type or "application/octet-stream"
         raw_text, entities = await resume_service.extract_entities_from_file_bytes(
-            content, content_type, run_agent=validate
+            content, content_type, run_agent=validate, filename=file.filename
         )
         resume.entities = entities
         resume.raw_text = raw_text
