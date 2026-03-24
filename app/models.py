@@ -60,6 +60,11 @@ class User(UUIDModel, TimestampModel, table=True):
         nullable=False,
         sa_column_kwargs={"server_default": text("false")},
     )
+    profile_image_url: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        description="Public URL for profile picture (e.g. from POST /uploads/image).",
+    )
 
 
 class Resume(UUIDModel, TimestampModel, table=True):

@@ -2,7 +2,9 @@
 Image upload endpoint: upload to S3 and return URL for use as cover_image_url etc.
 """
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from typing import Literal
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from app.api.deps import get_current_user
 from app.api.uploads.schemas import UploadImageResponse
@@ -26,11 +28,16 @@ MAX_BYTES = (getattr(settings, "MAX_COVER_IMAGE_SIZE_MB", 5) or 5) * 1024 * 1024
 )
 async def upload_image(
     file: UploadFile = File(..., description="Image file (JPEG, PNG, or WebP)"),
+    purpose: Literal["cover", "profile"] = Query(
+        "cover",
+        description="cover: job posting cover images; profile: user profile pictures (S3 prefix only).",
+    ),
     current_user: User = Depends(get_current_user),
 ):
     """
     Accepts a single image file, uploads it to S3, and returns the public URL.
-    Use this URL as `cover_image_url` when creating or updating a job posting.
+    - Use `purpose=cover` (default) with job postings as `cover_image_url`.
+    - Use `purpose=profile` for avatars, then set `profile_image_url` via PATCH /auth/me.
 
     Requires S3_UPLOADS_BUCKET and AWS credentials to be set.
     """
@@ -58,8 +65,13 @@ async def upload_image(
     if not content_type:
         content_type = "image/jpeg"
 
+    prefix = (
+        "uploads/profile-images"
+        if purpose == "profile"
+        else "uploads/cover-images"
+    )
     try:
-        url = upload_image_to_s3(content, content_type)
+        url = upload_image_to_s3(content, content_type, prefix=prefix)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:

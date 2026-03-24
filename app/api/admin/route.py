@@ -67,7 +67,7 @@ async def admin_list_users(
     "/users/{user_id}",
     response_model=CommonResponse[AdminUserListItem],
     name="Admin update user",
-    summary="Update a user's name and/or email.",
+    summary="Update a user's name, email, and/or profile_image_url.",
 )
 async def admin_update_user(
     user_id: uuid_pkg.UUID,
@@ -75,26 +75,29 @@ async def admin_update_user(
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if body.name is None and body.email is None:
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provide at least one of name or email",
+            detail="Provide at least one field to update",
         )
     result = await db.execute(select(User).where(User.id == user_id))
     target = result.scalars().one_or_none()
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    if body.email is not None and body.email != target.email:
-        dup = await db.execute(select(User).where(User.email == body.email))
+    if "email" in updates and updates["email"] != target.email:
+        dup = await db.execute(select(User).where(User.email == updates["email"]))
         if dup.scalars().one_or_none() is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered",
             )
-        target.email = body.email
-    if body.name is not None:
-        target.name = body.name
+        target.email = updates["email"]
+    if "name" in updates:
+        target.name = updates["name"]
+    if "profile_image_url" in updates:
+        target.profile_image_url = updates["profile_image_url"]
 
     db.add(target)
     await db.commit()

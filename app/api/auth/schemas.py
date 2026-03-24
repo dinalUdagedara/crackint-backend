@@ -1,6 +1,7 @@
 """Request/response schemas for auth API."""
 
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
@@ -36,7 +37,19 @@ class UserRead(BaseModel):
     email: str
     name: str
     is_admin: bool = False
+    profile_image_url: Optional[str] = None
     created_at: datetime
+
+
+class UserProfileUpdate(BaseModel):
+    """Body for PATCH /auth/me: update profile fields (send only fields to change)."""
+
+    name: str | None = Field(default=None, min_length=1, description="New display name.")
+    email: EmailStr | None = Field(default=None, description="New email (must be unique).")
+    profile_image_url: str | None = Field(
+        default=None,
+        description="Public URL of profile image (e.g. from POST /uploads/image?purpose=profile). Omit unchanged; send null to clear.",
+    )
 
 
 class TokenResponse(BaseModel):

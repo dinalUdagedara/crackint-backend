@@ -16,6 +16,7 @@ class AdminUserListItem(BaseModel):
     email: str
     name: str
     is_admin: bool
+    profile_image_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -25,6 +26,7 @@ class AdminUserUpdate(BaseModel):
 
     name: Optional[str] = Field(default=None, min_length=1)
     email: Optional[EmailStr] = None
+    profile_image_url: Optional[str] = None
 
 
 class AdminUserDeletePayload(BaseModel):

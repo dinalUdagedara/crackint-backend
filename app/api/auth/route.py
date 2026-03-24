@@ -3,7 +3,7 @@ Auth endpoints: register, login, google, me.
 """
 
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from google.oauth2 import id_token
@@ -11,7 +11,14 @@ from google.auth.transport import requests as google_requests
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth.schemas import GoogleTokenRequest, LoginRequest, RegisterRequest, TokenResponse, UserRead
+from app.api.auth.schemas import (
+    GoogleTokenRequest,
+    LoginRequest,
+    RegisterRequest,
+    TokenResponse,
+    UserProfileUpdate,
+    UserRead,
+)
 from app.api.deps import get_current_user, get_db
 from app.auth.jwt import create_access_token
 from app.auth.password import hash_password, verify_password
@@ -174,5 +181,46 @@ async def me(
     return CommonResponse(
         success=True,
         message="Current user",
+        payload=UserRead.model_validate(current_user),
+    )
+
+
+@router.patch(
+    "/me",
+    response_model=CommonResponse[UserRead],
+    name="Update current user profile",
+    summary="Update the authenticated user's profile (name, email, profile_image_url).",
+)
+async def update_me(
+    body: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Requires valid Bearer token. Send at least one field to update (use exclude-unset semantics)."""
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide at least one field to update",
+        )
+    if "email" in updates and updates["email"] != current_user.email:
+        dup = await db.execute(select(User).where(User.email == updates["email"]))
+        if dup.scalars().one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered",
+            )
+        current_user.email = updates["email"]
+    if "name" in updates:
+        current_user.name = updates["name"]
+    if "profile_image_url" in updates:
+        current_user.profile_image_url = updates["profile_image_url"]
+    current_user.updated_at = datetime.now()
+    db.add(current_user)
+    await db.commit()
+    await db.refresh(current_user)
+    return CommonResponse(
+        success=True,
+        message="Profile updated successfully",
         payload=UserRead.model_validate(current_user),
     )
