@@ -83,6 +83,11 @@ class Resume(UUIDModel, TimestampModel, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
     raw_text: Optional[str] = Field(default=None, nullable=True)
+    source_file_url: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        description="Public URL of uploaded resume file in S3 (when saved during file extract).",
+    )
     # Latest CV score from LLM (stored after POST/GET score or readiness when computed)
     cv_score: Optional[float] = Field(default=None, nullable=True)
     cv_breakdown: Optional[Dict[str, float]] = Field(
@@ -112,6 +117,11 @@ class JobPosting(UUIDModel, TimestampModel, table=True):
         sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
     )
     raw_text: Optional[str] = Field(default=None, nullable=True)
+    source_file_url: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        description="Public URL of uploaded job description file in S3 (optional).",
+    )
     location: Optional[str] = Field(default=None, nullable=True)
     deadline: Optional[datetime] = Field(default=None, nullable=True)
     # Job tracker / job detail fields (optional, additive)

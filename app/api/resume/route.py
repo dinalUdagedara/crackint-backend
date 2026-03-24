@@ -37,6 +37,7 @@ from app.common.http_response_model import CommonResponse, PageMeta
 from app.config import settings
 from app.models import Resume, User
 from app.services.cv_scoring import score_cv_from_file, score_cv_from_raw_text
+from app.services.s3_uploads import try_upload_document_to_s3
 from app.services.text_extraction import UNSUPPORTED_UPLOAD_DETAIL, upload_content_type_allowed
 
 router = APIRouter()
@@ -429,22 +430,30 @@ async def extract_resume_entities(
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
         content_type = file.content_type or "application/octet-stream"
+        source_url = try_upload_document_to_s3(
+            content, file.content_type, file.filename, "uploads/resumes"
+        )
         raw_text, entities = await resume_service.extract_entities_from_file_bytes(
             content, content_type, run_agent=validate, filename=file.filename
         )
-        payload = ResumeExtractResponse(entities=entities, raw_text=raw_text)
+        resume = Resume(
+            user_id=current_user.id,
+            entities=entities,
+            raw_text=raw_text,
+            source_file_url=source_url,
+        )
     else:
         text_clean = text.strip()
         entities = await resume_service.extract_entities_from_text(
             text_clean, run_agent=validate
         )
-        payload = ResumeExtractResponse(entities=entities, raw_text=text_clean)
+        resume = Resume(
+            user_id=current_user.id,
+            entities=entities,
+            raw_text=text_clean,
+            source_file_url=None,
+        )
 
-    resume = Resume(
-        user_id=current_user.id,
-        entities=payload.entities,
-        raw_text=payload.raw_text,
-    )
     session.add(resume)
     await session.commit()
     await session.refresh(resume)
@@ -454,6 +463,12 @@ async def extract_resume_entities(
         validate,
     )
 
+    payload = ResumeExtractResponse(
+        entities=resume.entities,
+        raw_text=resume.raw_text,
+        resume_id=resume.id,
+        source_file_url=resume.source_file_url,
+    )
     return CommonResponse(
         success=True,
         message="Entities extracted successfully",
@@ -521,11 +536,15 @@ async def update_resume(
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
         content_type = file.content_type or "application/octet-stream"
+        source_url = try_upload_document_to_s3(
+            content, file.content_type, file.filename, "uploads/resumes"
+        )
         raw_text, entities = await resume_service.extract_entities_from_file_bytes(
             content, content_type, run_agent=validate, filename=file.filename
         )
         resume.entities = entities
         resume.raw_text = raw_text
+        resume.source_file_url = source_url
     else:
         text_clean = text.strip()
         entities = await resume_service.extract_entities_from_text(
@@ -533,11 +552,17 @@ async def update_resume(
         )
         resume.entities = entities
         resume.raw_text = text_clean
+        resume.source_file_url = None
 
     await session.commit()
     await session.refresh(resume)
 
-    payload = ResumeExtractResponse(entities=resume.entities, raw_text=resume.raw_text)
+    payload = ResumeExtractResponse(
+        entities=resume.entities,
+        raw_text=resume.raw_text,
+        resume_id=resume.id,
+        source_file_url=resume.source_file_url,
+    )
     return CommonResponse(
         success=True,
         message="Resume updated successfully",

@@ -8,6 +8,7 @@ from app.common.http_response_model import CommonResponse
 from app.api.job.schemas import JobExtractResponse
 from app.api.job import service as job_service
 from app.config import settings
+from app.services.s3_uploads import try_upload_document_to_s3
 from app.services.text_extraction import UNSUPPORTED_UPLOAD_DETAIL, upload_content_type_allowed
 
 router = APIRouter()
@@ -63,14 +64,21 @@ async def extract_job_entities(
                 detail=f"File size exceeds maximum allowed ({settings.MAX_UPLOAD_SIZE_MB} MB).",
             )
         content_type = file.content_type or "application/octet-stream"
+        source_url = try_upload_document_to_s3(
+            content, file.content_type, file.filename, "uploads/job-sources"
+        )
         raw_text, entities = await job_service.extract_entities_from_file_bytes(
             content, content_type, run_agent=validate, filename=file.filename
         )
-        payload = JobExtractResponse(entities=entities, raw_text=raw_text)
+        payload = JobExtractResponse(
+            entities=entities, raw_text=raw_text, source_file_url=source_url
+        )
     else:
         text_clean = text.strip()
         entities = await job_service.extract_entities_from_text(text_clean, run_agent=validate)
-        payload = JobExtractResponse(entities=entities, raw_text=None)
+        payload = JobExtractResponse(
+            entities=entities, raw_text=None, source_file_url=None
+        )
 
     return CommonResponse(
         success=True,

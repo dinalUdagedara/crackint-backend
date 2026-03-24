@@ -18,6 +18,10 @@ class ResumeListItem(BaseModel):
     user_id: Optional[uuid_pkg.UUID] = None
     entities: Dict[str, List[str]] = Field(..., description="NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE.")
     raw_text: Optional[str] = None
+    source_file_url: Optional[str] = Field(
+        default=None,
+        description="URL of the original uploaded file in S3, if saved.",
+    )
     cv_score: Optional[float] = None
     cv_scored_at: Optional[datetime] = None
     created_at: datetime
@@ -74,6 +78,11 @@ class ResumeExtractResponse(BaseModel):
     raw_text: str | None = Field(
         default=None,
         description="Raw text used for extraction (if client sent file). Omitted if client sent text.",
+    )
+    resume_id: uuid_pkg.UUID = Field(..., description="ID of the persisted resume row.")
+    source_file_url: str | None = Field(
+        default=None,
+        description="Public URL of the uploaded file in S3 when a file was sent and S3 is configured.",
     )
 
 

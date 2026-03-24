@@ -24,6 +24,10 @@ class JobPostingListItem(BaseModel):
         default=None,
         description="Raw job description text used for extraction, when available.",
     )
+    source_file_url: Optional[str] = Field(
+        default=None,
+        description="URL of the original uploaded job file in S3 (from /jobs/extract or manual upload).",
+    )
     location: Optional[str] = None
     deadline: Optional[datetime] = None
     created_at: datetime
@@ -55,6 +59,10 @@ class JobPostingCreate(BaseModel):
     raw_text: Optional[str] = Field(
         default=None,
         description="Optional raw job description text used for extraction.",
+    )
+    source_file_url: Optional[str] = Field(
+        default=None,
+        description="Optional URL of uploaded job file (e.g. from /jobs/extract response or POST /uploads/document).",
     )
     location: Optional[str] = Field(
         default=None,
@@ -135,6 +143,10 @@ class JobPostingUpdate(BaseModel):
     )
     display_order: Optional[int] = Field(default=None, description="User-defined display order.")
     cover_image_url: Optional[str] = Field(default=None, description="Cover image URL (null to clear).")
+    source_file_url: Optional[str] = Field(
+        default=None,
+        description="Uploaded job file URL in S3 (null to clear).",
+    )
     notes: Optional[str] = Field(default=None, description="Free-form notes.")
     questions_to_ask: Optional[str] = Field(default=None, description="Questions to ask in the interview.")
     interview_at: Optional[datetime] = Field(default=None, description="Interview date/time (ISO 8601).")

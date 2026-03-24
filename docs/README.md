@@ -8,6 +8,7 @@ Welcome to the Crackint Backend API documentation. This folder contains technica
 
 | Document | Description | Use Case |
 |----------|-------------|----------|
+| [**ADMIN_AND_USER_PROFILE.md**](./ADMIN_AND_USER_PROFILE.md) | Admin API, `PATCH /auth/me`, profile images (S3) | Admin dashboard & account settings |
 | [**QUICK_REFERENCE.md**](./QUICK_REFERENCE.md) | Quick reference guide for job entity validation | Quick lookup, code snippets |
 | [**frontend-job-entity-validation.md**](./frontend-job-entity-validation.md) | Complete guide for job entity AI validation feature | Integration guide, detailed examples |
 

@@ -249,6 +249,7 @@ async def create_job_posting(
         user_id=current_user.id,
         entities=body.entities,
         raw_text=body.raw_text,
+        source_file_url=body.source_file_url,
         location=body.location,
         deadline=_naive_utc(body.deadline),
         cover_image_url=body.cover_image_url,
@@ -329,6 +330,8 @@ async def update_job_posting(
         row.display_order = body.display_order
     if "cover_image_url" in sent:
         row.cover_image_url = body.cover_image_url
+    if "source_file_url" in sent:
+        row.source_file_url = body.source_file_url
     if "notes" in sent:
         row.notes = body.notes
     if "questions_to_ask" in sent:
