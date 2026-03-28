@@ -377,7 +377,7 @@ async def extract_resume_entities(
         default=None, description="Raw resume text (use when not uploading a file)"
     ),
     validate: bool = Query(
-        default=False,
+        default=True,
         description="If true, run AI agent to validate and correct entities (requires RESUME_ENTITY_AGENT_ENABLED and OPENAI_API_KEY).",
     ),
     current_user: User = Depends(get_current_user),

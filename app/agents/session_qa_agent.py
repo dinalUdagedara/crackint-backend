@@ -1,6 +1,6 @@
 """
 Session Q&A agent: question generation and answer evaluation for interview prep.
-Uses LLM with prompts from docs/SESSION_QA_PROMPTS.md.
+System prompts and LLM calls are defined in this module.
 """
 
 import json
@@ -190,7 +190,7 @@ Requested question type (or leave empty to choose): {qtype_str}"""
         return _fallback_result()
 
 
-# --- Greeting / off-topic / skip (ChatGPT-style, LLM-only) ---
+# --- Greeting / off-topic / skip (LLM classification + redirect) ---
 
 # Sentinel returned when the user asks to skip to the next question (caller generates next question).
 NEXT_QUESTION_SENTINEL = "__NEXT_QUESTION__"
@@ -209,7 +209,7 @@ Your job — reply with exactly ONE of the following:
 2. NEXT_QUESTION — if the user clearly wants to skip to the next question (e.g. "next question", "move on", "skip", "I don't want to answer this", "let's move on", "next one please", "can we skip this one"). Use this when they are explicitly asking to advance, not when they are just saying they don't know (for that use a redirect).
 
 3. Otherwise (greeting, off-topic, "I don't know", "hint?", "can you repeat?", small talk, or not attempting an answer) — reply with ONE short, natural sentence that:
-   - Feels conversational and supportive (like ChatGPT)
+   - Feels conversational and supportive (warm, natural tone)
    - Gently brings them back to the question, or encourages them to try
    - Does NOT sound robotic or formal
 

@@ -1073,7 +1073,7 @@ async def post_evaluate_answer(
 
     role_level = RoleLevel.ASE.value
 
-    # ChatGPT-style: if user message is greeting/off-topic, return a friendly redirect (no evaluation)
+    # If the user message is greeting/off-topic, return a friendly redirect (no evaluation)
     try:
         redirect_message = await classify_and_redirect(
             question=last_question_content,

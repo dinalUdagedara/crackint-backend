@@ -25,7 +25,7 @@ MAX_BYTES = (settings.MAX_UPLOAD_SIZE_MB or 10) * 1024 * 1024
 async def extract_job_entities(
     file: UploadFile | None = File(default=None, description="Job description PDF file"),
     text: str | None = Form(default=None, description="Raw job description text (use when not uploading a file)"),
-    validate: bool = Query(default=False, description="If true, run AI agent to validate and correct entities (requires JOB_ENTITY_AGENT_ENABLED and OPENAI_API_KEY)."),
+    validate: bool = Query(default=True, description="If true, run AI agent to validate and correct entities (requires JOB_ENTITY_AGENT_ENABLED and OPENAI_API_KEY)."),
 ):
     """
     Accept either:
