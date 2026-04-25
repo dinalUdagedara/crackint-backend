@@ -39,11 +39,4 @@ venv
 logs
 log
 
-# ML model artifacts (large binaries — store separately, never in Git)
-model/
-models/
-model-old/
-*.pt
-*.pth
-*.bin
-*.onnx
+# ML model artifacts are committed for AWS image builds in this repo.

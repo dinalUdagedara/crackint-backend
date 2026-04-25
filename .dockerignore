@@ -9,7 +9,6 @@ __pycache__/
 .mypy_cache/
 .DS_Store
 .env
-model/
 alembic/versions/__pycache__/
 assets/
 terminals/
