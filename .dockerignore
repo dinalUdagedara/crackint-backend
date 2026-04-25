@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+.env
+model/
+alembic/versions/__pycache__/
+assets/
+terminals/
+agent-transcripts/

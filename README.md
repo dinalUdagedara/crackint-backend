@@ -72,6 +72,24 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 4. Open docs: [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
 
+## Build and push in AWS (CodeBuild -> ECR)
+
+Use this when you want AWS to build the Docker image (instead of your laptop) and push to ECR.
+
+1. Ensure the ECR repository exists:
+   - `968196829412.dkr.ecr.us-east-1.amazonaws.com/crackint-backend`
+2. Create a CodeBuild project:
+   - Source: this GitHub repository
+   - Environment: Managed image, Linux, `x86_64`
+   - Privileged mode: **Enabled** (required for Docker build)
+   - Buildspec: use repository file `buildspec.yml`
+3. Attach IAM permissions to the CodeBuild service role:
+   - Minimal policy is at `docs/aws/codebuild-ecr-policy.json`
+4. Run the CodeBuild project. It will:
+   - Build the image from `Dockerfile`
+   - Tag and push to ECR as `latest`
+5. Redeploy ECS service (force new deployment) to pull the new image.
+
 ## NER model paths
 
 **Resume NER**  

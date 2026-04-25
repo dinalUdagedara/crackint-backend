@@ -52,9 +52,6 @@ def upload_image_to_s3(
     if not bucket or not bucket.strip():
         raise ValueError("S3 uploads are not configured: set S3_UPLOADS_BUCKET (and AWS credentials).")
 
-    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
-        raise ValueError("AWS credentials are not set: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
-
     ext = _CONTENT_TYPE_TO_EXT.get(content_type.lower() if content_type else "")
     if not ext:
         raise ValueError(f"Unsupported image type: {content_type}. Use JPEG, PNG, or WebP.")
@@ -65,12 +62,12 @@ def upload_image_to_s3(
     import boto3
     from botocore.exceptions import ClientError
 
-    client = boto3.client(
-        "s3",
-        region_name=region,
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-    )
+    client_kwargs = {"region_name": region}
+    # Prefer IAM role credentials in AWS (ECS task role). Fall back to explicit keys if provided.
+    if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+        client_kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
+        client_kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
+    client = boto3.client("s3", **client_kwargs)
 
     extra = {"ContentType": content_type}
     # Optional: make object publicly readable (bucket must allow this)
@@ -114,9 +111,6 @@ def upload_document_to_s3(
     if not bucket or not bucket.strip():
         raise ValueError("S3 uploads are not configured: set S3_UPLOADS_BUCKET (and AWS credentials).")
 
-    if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
-        raise ValueError("AWS credentials are not set: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
-
     effective = resolve_effective_content_type(declared_content_type, filename, content)
     if effective == "application/octet-stream":
         raise ValueError("Could not determine file type for upload (unsupported or empty file).")
@@ -130,12 +124,12 @@ def upload_document_to_s3(
 
     import boto3
 
-    client = boto3.client(
-        "s3",
-        region_name=region,
-        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-    )
+    client_kwargs = {"region_name": region}
+    # Prefer IAM role credentials in AWS (ECS task role). Fall back to explicit keys if provided.
+    if settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY:
+        client_kwargs["aws_access_key_id"] = settings.AWS_ACCESS_KEY_ID
+        client_kwargs["aws_secret_access_key"] = settings.AWS_SECRET_ACCESS_KEY
+    client = boto3.client("s3", **client_kwargs)
 
     client.put_object(
         Bucket=bucket,
@@ -170,11 +164,6 @@ def try_upload_document_to_s3(
 
 
 def is_s3_uploads_configured() -> bool:
-    """Return True if S3 uploads can be used (bucket and credentials set)."""
+    """Return True if S3 uploads can be used (bucket set; creds can come from IAM role)."""
     bucket = settings.S3_UPLOADS_BUCKET
-    return bool(
-        bucket
-        and bucket.strip()
-        and settings.AWS_ACCESS_KEY_ID
-        and settings.AWS_SECRET_ACCESS_KEY
-    )
+    return bool(bucket and bucket.strip())

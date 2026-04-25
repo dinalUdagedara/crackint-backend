@@ -1,0 +1,30 @@
+version: 0.2
+
+env:
+  variables:
+    AWS_DEFAULT_REGION: us-east-1
+    IMAGE_TAG: latest
+    ECR_REPOSITORY: crackint-backend
+
+phases:
+  pre_build:
+    commands:
+      - echo "Preparing CodeBuild environment..."
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - ECR_URI="$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPOSITORY"
+      - echo "Logging in to Amazon ECR: $ECR_URI"
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
+  build:
+    commands:
+      - echo "Building Docker image..."
+      - docker build -t "$ECR_REPOSITORY:$IMAGE_TAG" .
+      - docker tag "$ECR_REPOSITORY:$IMAGE_TAG" "$ECR_URI:$IMAGE_TAG"
+  post_build:
+    commands:
+      - echo "Pushing Docker image to ECR..."
+      - docker push "$ECR_URI:$IMAGE_TAG"
+      - printf '{"imageUri":"%s"}' "$ECR_URI:$IMAGE_TAG" > imageDetail.json
+
+artifacts:
+  files:
+    - imageDetail.json
