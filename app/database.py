@@ -10,12 +10,21 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import settings
 
+connect_args = {
+    "server_settings": {"application_name": "Crackint Backend API"},
+}
+
+# Managed PostgreSQL environments often require TLS. Keep localhost flexible
+# for local development where SSL may not be configured.
+if settings.DATABASE_HOST not in {"localhost", "127.0.0.1"}:
+    connect_args["ssl"] = "require"
+
 async_engine = create_async_engine(
     settings.DB_URL,
     echo=settings.DB_ECHO,
     future=True,
     pool_pre_ping=True,
-    connect_args={"server_settings": {"application_name": "Crackint Backend API"}},
+    connect_args=connect_args,
 )
 
 SessionLocal = sessionmaker(
