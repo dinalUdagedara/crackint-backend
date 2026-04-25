@@ -23,7 +23,7 @@ phases:
     commands:
       - echo "Pushing Docker image to ECR..."
       - docker push "$ECR_URI:$IMAGE_TAG"
-      - printf '{"imageUri":"%s"}' "$ECR_URI:$IMAGE_TAG" > imageDetail.json
+      - 'printf ''{"imageUri":"%s"}'' "$ECR_URI:$IMAGE_TAG" > imageDetail.json'
 
 artifacts:
   files:
