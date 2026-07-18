@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
+    # Comma-separated list of allowed CORS origins (e.g. "https://crackint.vercel.app,https://dinaludagedara.com").
+    # Defaults to "*" for local dev; set explicitly in production.
+    CORS_ORIGINS: str = "*"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        if self.CORS_ORIGINS.strip() == "*":
+            return ["*"]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
     # Database (PostgreSQL)
     DATABASE_HOST: str = "localhost"
     DATABASE_PORT: int = 5432
