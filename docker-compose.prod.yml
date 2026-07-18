@@ -1,30 +1,11 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${DATABASE_NAME}
-      POSTGRES_USER: ${DATABASE_USER}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER} -d ${DATABASE_NAME}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   backend:
     build: .
     restart: unless-stopped
     env_file: .env
-    environment:
-      # Overrides whatever DATABASE_HOST is set to in .env — always talk to the
-      # postgres service on the compose network, not localhost.
-      DATABASE_HOST: postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
+    # DATABASE_HOST/PORT/NAME/USER/PASSWORD in .env point at a managed Neon Postgres
+    # instance (free tier) — no local postgres container needed. SSL is auto-enabled
+    # for any non-localhost DATABASE_HOST (see app/database.py).
     command: sh -c "alembic upgrade head && uvicorn app.main:get_app --factory --host 0.0.0.0 --port 8000"
     expose:
       - "8000"
@@ -43,6 +24,5 @@ services:
       - backend
 
 volumes:
-  pgdata:
   caddy_data:
   caddy_config:

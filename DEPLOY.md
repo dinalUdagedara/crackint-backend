@@ -1,9 +1,10 @@
 # Deploying to Oracle Cloud "Always Free"
 
 Free-forever alternative to the old AWS ECS/RDS/ALB/NAT setup (which was the source of the
-~$100/mo bill). Everything — FastAPI backend, Postgres, HTTPS — runs on a single Oracle
-Ampere A1 VM (4 OCPU / 24GB RAM, Always Free tier, no time limit, no card charged as long as
-you stay within Always Free shapes).
+~$100/mo bill). The backend + Caddy (for HTTPS) run on a single Oracle Ampere A1 VM (Always
+Free tier, no time limit, no card charged as long as you stay within Always Free shapes).
+Postgres is a separate managed **Neon** instance (also free tier) — not self-hosted on the
+VM, so there's no database container to manage or back up.
 
 Domain used below: `api.dinaludagedara.com` (managed in Namecheap).
 
@@ -146,19 +147,19 @@ docker compose -f docker-compose.prod.yml up --build -d
 
 ## 9. Backups
 
-Postgres data lives in the `pgdata` Docker volume on the VM — nothing is backed up off-box by
-default. Periodically dump it somewhere durable (e.g. your own machine, or Oracle's free 20GB
-Object Storage):
+Postgres data lives in Neon, not on the VM — Neon's free tier includes point-in-time restore
+within its retention window, so there's no manual backup step needed here. If you want an
+extra off-platform copy, you can still dump it from anywhere with network access:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec postgres \
-  pg_dump -U crackint crackint_db > backup-$(date +%F).sql
+pg_dump "postgresql://<user>:<password>@<host>.neon.tech/<dbname>?sslmode=require" > backup-$(date +%F).sql
 ```
 
 ## What NOT to add back
 
 The old ~$100/mo bill came from ECS/Fargate + RDS + an Application Load Balancer + a NAT
 Gateway all running 24/7. None of those exist in this setup — it's a single always-free VM,
-self-hosted Postgres, and Caddy doing TLS for free via Let's Encrypt. If you ever go back to
-AWS for something, avoid NAT Gateways and ALBs for low-traffic services — they bill hourly
-regardless of usage and are the single biggest source of "surprise" AWS bills for small apps.
+a managed free-tier Postgres, and Caddy doing TLS for free via Let's Encrypt. If you ever go
+back to AWS for something, avoid NAT Gateways and ALBs for low-traffic services — they bill
+hourly regardless of usage and are the single biggest source of "surprise" AWS bills for
+small apps.
