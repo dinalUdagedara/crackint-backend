@@ -10,6 +10,7 @@ import uuid as uuid_pkg
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.rate_limit import llm_rate_limit
 from app.api.deps import get_current_user, get_db
 from app.api.session import service
 from app.api.session.schemas import (
@@ -267,6 +268,7 @@ async def get_session_with_messages(
 
 @router.post(
     "/{session_id}/next-question",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[NextQuestionPayload],
     name="Generate next question",
     summary="Generate the next interview question for this session and store it as a message.",
@@ -299,6 +301,7 @@ async def post_next_question(
 
 @router.post(
     "/{session_id}/chat",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[ChatTurnPayload],
     name="Chat turn (unified)",
     summary="Unified chat endpoint: store USER message, then redirect or evaluate and maybe ask next question.",
@@ -319,6 +322,7 @@ async def post_chat_turn(
 
 @router.post(
     "/{session_id}/send",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[SendReplyPayload],
     name="Send reply",
     summary="Send the user's message, store it, and return assistant response (redirect or evaluation feedback) in one call.",
@@ -352,6 +356,7 @@ async def post_send(
 
 @router.post(
     "/{session_id}/evaluate-answer",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[EvaluateAnswerPayload],
     name="Evaluate answer",
     summary="Evaluate the candidate's answer (against the last question) and store feedback as a message.",

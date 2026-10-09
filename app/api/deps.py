@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.jwt import decode_token
 from app.database import db_session
 from app.models import User
+from app.services.llm import current_user_id as llm_current_user_id
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -61,6 +62,7 @@ async def get_current_user(
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    llm_current_user_id.set(user.id)  # attribute LLM usage in this request to the user
     return user
 
 

@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import ConfigDict
-from sqlalchemy import Column, UniqueConstraint, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, ForeignKey, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlmodel import Field, SQLModel
 
 
@@ -292,3 +292,25 @@ class CoverLetter(UUIDModel, TimestampModel, table=True):
         ),
         description="Metadata such as model, temperature, tone, language, etc.",
     )
+
+
+class LLMUsage(UUIDModel, TimestampModel, table=True):
+    """One row per LLM call: who/what triggered it, tokens, estimated cost, latency."""
+
+    __tablename__ = "llm_usage"
+
+    user_id: Optional[uuid_pkg.UUID] = Field(
+        default=None,
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True),
+    )
+    session_id: Optional[uuid_pkg.UUID] = Field(
+        default=None,
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("prep_sessions.id", ondelete="SET NULL"), nullable=True, index=True),
+    )
+    agent: str = Field(nullable=False, index=True, description="Calling agent, e.g. session_qa.evaluate.")
+    model: str = Field(nullable=False)
+    prompt_tokens: int = Field(default=0, nullable=False)
+    completion_tokens: int = Field(default=0, nullable=False)
+    cost_usd: Optional[float] = Field(default=None, nullable=True, description="Estimated cost; null if model price unknown.")
+    latency_ms: int = Field(default=0, nullable=False)
+    success: bool = Field(default=True, nullable=False)
