@@ -23,11 +23,11 @@ from app.agents.session_qa_agent import (
     generate_next_question,
     generate_session_title,
     generate_tutor_chat_reply,
-    get_suggested_difficulty,
     summarize_session_feedback,
 )
 from app.models import JobPosting, Message, PrepSession, Resume
 from app.schemas.common import RoleLevel, SenderType, SessionMode
+from app.services.difficulty import choose_difficulty, choose_question_type, infer_role_level
 from app.services.llm import current_session_id as llm_current_session_id
 
 # Update session summary (LLM) only every N FEEDBACK messages to reduce cost.
@@ -40,6 +40,31 @@ def _agent_unavailable(e: ValueError) -> HTTPException:
 
 def _as_history(m: Message) -> Dict[str, Any]:
     return {"sender": m.sender, "type": m.type, "content": m.content}
+
+
+@dataclass
+class _Performance:
+    last_question_difficulty: Optional[str]
+    scores: List[float]
+    question_types: List[Optional[str]]
+
+
+def _performance(messages: Sequence[Message]) -> _Performance:
+    """Difficulty of the latest question, scored-answer history, and question types asked so far."""
+    last_difficulty: Optional[str] = None
+    scores: List[float] = []
+    types: List[Optional[str]] = []
+    for m in messages:
+        meta = m.meta or {}
+        if m.type == "QUESTION":
+            last_difficulty = meta.get("difficulty")
+            types.append(meta.get("question_type"))
+        elif m.type == "FEEDBACK" and meta.get("redirect") != "true" and meta.get("score") is not None:
+            try:
+                scores.append(float(meta["score"]))
+            except (TypeError, ValueError):
+                pass
+    return _Performance(last_difficulty, scores, types)
 
 
 @dataclass
@@ -149,8 +174,39 @@ async def load_context(
         resume_entities=resume_entities,
         job_entities=job_entities,
         messages=await list_messages(db, session_id),
-        role_level=role_level or RoleLevel.ASE.value,
+        # Request override > session setting > inferred from job posting > ASE.
+        role_level=role_level
+        or session_obj.role_level
+        or infer_role_level(job_entities)
+        or RoleLevel.ASE.value,
     )
+
+
+async def create_session(
+    db: AsyncSession,
+    user_id: uuid_pkg.UUID,
+    mode: str,
+    resume_id: Optional[uuid_pkg.UUID] = None,
+    job_posting_id: Optional[uuid_pkg.UUID] = None,
+    role_level: Optional[str] = None,
+) -> PrepSession:
+    """Create an ACTIVE session. Without an explicit role_level, infer it from the job posting."""
+    if role_level is None and job_posting_id is not None:
+        job = await db.get(JobPosting, job_posting_id)
+        if job is not None:
+            role_level = infer_role_level(job.entities)
+    record = PrepSession(
+        user_id=user_id,
+        resume_id=resume_id,
+        job_posting_id=job_posting_id,
+        mode=mode,
+        status="ACTIVE",
+        role_level=role_level,
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return record
 
 
 async def update_session(
@@ -158,14 +214,17 @@ async def update_session(
     prep_session: PrepSession,
     title: Optional[str] = None,
     mode: Optional[str] = None,
+    role_level: Optional[str] = None,
 ) -> PrepSession:
-    """Rename (stored in summary.title) and/or change mode."""
+    """Rename (stored in summary.title), change mode, and/or change role level."""
     if title is not None:
         summary_dict = dict(prep_session.summary or {})
         summary_dict["title"] = title
         prep_session.summary = summary_dict
     if mode is not None:
         prep_session.mode = mode
+    if role_level is not None:
+        prep_session.role_level = role_level
     db.add(prep_session)
     await db.commit()
     await db.refresh(prep_session)
@@ -197,8 +256,20 @@ async def ask_next_question(
     question_type: Optional[str] = None,
     prefer_difficulty: Optional[str] = None,
 ) -> Tuple[Message, QuestionGenerationResult]:
-    """Generate the next question and store it as an ASSISTANT QUESTION message."""
+    """Generate the next question and store it as an ASSISTANT QUESTION message.
+
+    Unless the caller asks for a difficulty / question type, they adapt to the session so far:
+    difficulty follows recent scores (see app.services.difficulty), and the type mix is balanced.
+    """
     question_index = ctx.question_count
+    perf = _performance([*ctx.messages, *extra_history])
+    if prefer_difficulty:
+        difficulty, difficulty_reason = prefer_difficulty, "requested"
+    else:
+        choice = choose_difficulty(question_index, perf.last_question_difficulty, perf.scores)
+        difficulty, difficulty_reason = choice.difficulty, choice.reason
+    question_type = question_type or choose_question_type(perf.question_types)
+
     try:
         result = await generate_next_question(
             role_level=ctx.role_level,
@@ -207,14 +278,13 @@ async def ask_next_question(
             previous_messages=ctx.history(extra_history),
             question_type=question_type,
             question_index=question_index,
-            suggested_difficulty=prefer_difficulty or get_suggested_difficulty(question_index),
+            suggested_difficulty=difficulty,
         )
     except ValueError as e:
         raise _agent_unavailable(e) from e
 
-    meta: Dict[str, Any] = {}
-    if result.difficulty:
-        meta["difficulty"] = result.difficulty
+    meta: Dict[str, Any] = {"difficulty_reason": difficulty_reason, "role_level": ctx.role_level}
+    meta["difficulty"] = result.difficulty or difficulty
     if result.question_type:
         meta["question_type"] = result.question_type
     message = await save_message(db, ctx.session.id, SenderType.ASSISTANT, "QUESTION", result.question, meta)

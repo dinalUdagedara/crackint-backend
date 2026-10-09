@@ -33,6 +33,10 @@ class PrepSessionCreate(BaseModel):
         default=SessionMode.TARGETED,
         description="Session mode, e.g. TARGETED or QUICK_PRACTICE.",
     )
+    role_level: Optional[RoleLevel] = Field(
+        default=None,
+        description="Seniority to target. If omitted, inferred from the job posting (falls back to ASE).",
+    )
 
 
 class PrepSessionSummary(BaseModel):
@@ -64,6 +68,10 @@ class PrepSessionUpdate(BaseModel):
         default=None,
         description="New mode for the session.",
     )
+    role_level: Optional[RoleLevel] = Field(
+        default=None,
+        description="New seniority level for the questions.",
+    )
 
 
 class PrepSessionRead(BaseModel):
@@ -77,6 +85,7 @@ class PrepSessionRead(BaseModel):
     job_posting_id: Optional[uuid_pkg.UUID] = None
     mode: SessionMode
     status: SessionStatus
+    role_level: Optional[RoleLevel] = None
     readiness_score: Optional[float] = None
     summary: Dict[str, Optional[str]]
     created_at: datetime
@@ -143,12 +152,12 @@ class NextQuestionRequest(BaseModel):
         description="Requested type: technical, behavioral, or system_design.",
     )
     role_level: Optional[RoleLevel] = Field(
-        default=RoleLevel.ASE,
-        description="Candidate level for question difficulty (default: ASE).",
+        default=None,
+        description="Override the candidate level for this question. Default: the session's role level.",
     )
     prefer_difficulty: Optional[DifficultyLiteral] = Field(
         default=None,
-        description="Override difficulty for this question: easy, medium, or hard. If omitted, backend uses the session difficulty curve.",
+        description="Override difficulty for this question: easy, medium, or hard. If omitted, difficulty adapts to recent scores (position curve before the first score).",
     )
 
 
@@ -180,7 +189,7 @@ class EvaluateAnswerRequest(BaseModel):
     )
     prefer_difficulty: Optional[DifficultyLiteral] = Field(
         default=None,
-        description="When user skips and a next question is returned, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
+        description="When user skips and a next question is returned, prefer this difficulty (easy/medium/hard). If omitted, difficulty adapts to recent scores.",
     )
 
 
@@ -221,7 +230,7 @@ class SendReplyRequest(BaseModel):
     )
     prefer_difficulty: Optional[DifficultyLiteral] = Field(
         default=None,
-        description="When a next question is generated, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
+        description="When a next question is generated, prefer this difficulty (easy/medium/hard). If omitted, difficulty adapts to recent scores.",
     )
 
 
@@ -269,7 +278,7 @@ class ChatRequest(BaseModel):
     )
     prefer_difficulty: Optional[DifficultyLiteral] = Field(
         default=None,
-        description="When a next question is generated this turn, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
+        description="When a next question is generated this turn, prefer this difficulty (easy/medium/hard). If omitted, difficulty adapts to recent scores.",
     )
 
 

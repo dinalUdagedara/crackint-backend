@@ -77,16 +77,14 @@ async def create_prep_session(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    record = PrepSession(
-        user_id=current_user.id,
+    record = await service.create_session(
+        session,
+        current_user.id,
+        mode=body.mode.value,
         resume_id=body.resume_id,
         job_posting_id=body.job_posting_id,
-        mode=body.mode.value,
-        status="ACTIVE",
+        role_level=body.role_level.value if body.role_level else None,
     )
-    session.add(record)
-    await session.commit()
-    await session.refresh(record)
     return CommonResponse(
         success=True,
         message="Prep session created successfully",
@@ -173,7 +171,11 @@ async def update_prep_session(
     db: AsyncSession = Depends(get_db),
 ):
     await service.update_session(
-        db, prep_session, title=body.title, mode=body.mode.value if body.mode else None
+        db,
+        prep_session,
+        title=body.title,
+        mode=body.mode.value if body.mode else None,
+        role_level=body.role_level.value if body.role_level else None,
     )
     return CommonResponse(
         success=True,
