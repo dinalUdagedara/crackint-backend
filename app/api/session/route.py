@@ -4,10 +4,12 @@ Prep session and message endpoints (MVP chat session APIs).
 Business logic lives in app.api.session.service; routes validate, call it, and shape responses.
 """
 
-from typing import Any, Dict, List, Optional
+import json
+from typing import Any, AsyncIterator, Dict, List, Optional
 import uuid as uuid_pkg
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.rate_limit import llm_rate_limit
@@ -30,7 +32,9 @@ from app.api.session.schemas import (
     SendReplyRequest,
 )
 from app.common.http_response_model import CommonResponse, PageMeta
-from app.models import PrepSession, User
+from app.database import SessionLocal
+from app.models import Message, PrepSession, User
+from app.services.llm import current_user_id as llm_current_user_id
 from app.schemas.common import SenderType
 
 router = APIRouter()
@@ -319,6 +323,43 @@ async def post_chat_turn(
         success=True,
         message=status_message,
         payload=ChatTurnPayload(new_messages=[MessageRead.model_validate(m) for m in new_messages]),
+    )
+
+
+def _sse(event: str, data: Dict[str, Any]) -> str:
+    if isinstance(data.get("message"), Message):
+        data = {**data, "message": MessageRead.model_validate(data["message"]).model_dump(mode="json", by_alias=True)}
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@router.post(
+    "/{session_id}/chat/stream",
+    dependencies=[Depends(llm_rate_limit)],
+    name="Chat turn (streaming)",
+    summary="Same as /chat, streamed as Server-Sent Events: message, feedback.delta, question.delta, done, error.",
+    response_class=StreamingResponse,
+)
+async def post_chat_turn_stream(
+    prep_session: PrepSession = Depends(get_own_prep_session),
+    body: ChatRequest = ...,
+):
+    session_id, user_id = prep_session.id, prep_session.user_id
+
+    async def events() -> AsyncIterator[str]:
+        # Own DB session: the stream outlives the request-scoped one.
+        llm_current_user_id.set(user_id)
+        async with SessionLocal() as db:
+            try:
+                ctx = await service.load_context(db, session_id)
+                async for event, data in service.chat_turn_stream(db, ctx, body.content, body.prefer_difficulty):
+                    yield _sse(event, data)
+            except HTTPException as e:
+                yield _sse("error", {"status": e.status_code, "detail": e.detail})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

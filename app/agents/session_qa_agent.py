@@ -5,13 +5,14 @@ System prompts and LLM calls are defined in this module.
 
 import json
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
 
 from app.agents.fallback import pick_fallback_question
 from app.config import settings
-from app.services.llm import chat_completion, get_client
+from app.agents.json_stream import JsonStringFieldExtractor
+from app.services.llm import chat_completion, chat_completion_stream, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,86 @@ def _strip_json_fence(content: str) -> str:
     return content
 
 
+def _question_user_content(
+    role_level: str,
+    job_entities: Dict[str, List[str]],
+    resume_entities: Dict[str, List[str]],
+    previous_messages: List[Dict[str, Any]],
+    question_type: Optional[str],
+    question_index: int,
+    suggested_difficulty: Optional[str],
+) -> str:
+    job_json = json.dumps(job_entities, ensure_ascii=False, indent=2)
+    resume_json = json.dumps(resume_entities, ensure_ascii=False, indent=2)
+    messages_formatted = "\n".join(
+        f"- [{m.get('sender', '?')}] ({m.get('type', '?')}): {m.get('content', '')[:200]}"
+        for m in previous_messages[-30:]
+    )
+    if not messages_formatted.strip():
+        messages_formatted = "(No previous messages yet.)"
+    qtype_str = question_type or "(any)"
+
+    difficulty_line = ""
+    if suggested_difficulty:
+        difficulty_line = f"\nThis is question number {question_index + 1} in this session. Prefer difficulty: {suggested_difficulty}. The session should progress from easier to harder.\n"
+
+    return f"""Role level: {role_level}
+{difficulty_line}
+Job posting entities (key: list of values):
+{job_json}
+
+Candidate resume entities (key: list of values):
+{resume_json}
+
+Previous messages in this session (do not repeat these as questions):
+{messages_formatted}
+
+Requested question type (or leave empty to choose): {qtype_str}"""
+
+
+def _fallback_question(
+    previous_messages: List[Dict[str, Any]],
+    question_index: int,
+    question_type: Optional[str],
+    suggested_difficulty: Optional[str],
+) -> QuestionGenerationResult:
+    fq, fd, ft = pick_fallback_question(
+        previous_messages=previous_messages,
+        question_index=question_index,
+        question_type=question_type,
+        suggested_difficulty=suggested_difficulty,
+    )
+    logger.info("Session Q&A: using static fallback question (LLM unavailable or failed).")
+    return QuestionGenerationResult(question=fq, difficulty=fd, question_type=ft)
+
+
+def _parse_question(content: Optional[str]) -> Optional[QuestionGenerationResult]:
+    """Parse the model's JSON reply; None if empty or invalid."""
+    content = _strip_json_fence((content or "").strip())
+    if not content:
+        return None
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.warning("Session Q&A question gen: invalid JSON from LLM: %s", e)
+        return None
+    question = (parsed.get("question") or "").strip()
+    if not question:
+        return None
+    return QuestionGenerationResult(
+        question=question,
+        difficulty=parsed.get("difficulty"),
+        question_type=parsed.get("question_type"),
+    )
+
+
+def _question_messages(user_content: str) -> List[Dict[str, Any]]:
+    return [
+        {"role": "system", "content": QUESTION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
 async def generate_next_question(
     role_level: str,
     job_entities: Dict[str, List[str]],
@@ -111,42 +192,13 @@ async def generate_next_question(
             "Session Q&A agent is disabled (SESSION_QA_AGENT_ENABLED=false or OPENAI_API_KEY unset)."
         )
 
-    job_json = json.dumps(job_entities, ensure_ascii=False, indent=2)
-    resume_json = json.dumps(resume_entities, ensure_ascii=False, indent=2)
-    messages_formatted = "\n".join(
-        f"- [{m.get('sender', '?')}] ({m.get('type', '?')}): {m.get('content', '')[:200]}"
-        for m in previous_messages[-30:]
+    user_content = _question_user_content(
+        role_level, job_entities, resume_entities, previous_messages,
+        question_type, question_index, suggested_difficulty,
     )
-    if not messages_formatted.strip():
-        messages_formatted = "(No previous messages yet.)"
-    qtype_str = question_type or "(any)"
-
-    difficulty_line = ""
-    if suggested_difficulty:
-        difficulty_line = f"\nThis is question number {question_index + 1} in this session. Prefer difficulty: {suggested_difficulty}. The session should progress from easier to harder.\n"
-
-    user_content = f"""Role level: {role_level}
-{difficulty_line}
-Job posting entities (key: list of values):
-{job_json}
-
-Candidate resume entities (key: list of values):
-{resume_json}
-
-Previous messages in this session (do not repeat these as questions):
-{messages_formatted}
-
-Requested question type (or leave empty to choose): {qtype_str}"""
 
     def _fallback_result() -> QuestionGenerationResult:
-        fq, fd, ft = pick_fallback_question(
-            previous_messages=previous_messages,
-            question_index=question_index,
-            question_type=question_type,
-            suggested_difficulty=suggested_difficulty,
-        )
-        logger.info("Session Q&A: using static fallback question (LLM unavailable or failed).")
-        return QuestionGenerationResult(question=fq, difficulty=fd, question_type=ft)
+        return _fallback_question(previous_messages, question_index, question_type, suggested_difficulty)
 
     try:
         get_client()
@@ -161,33 +213,64 @@ Requested question type (or leave empty to choose): {qtype_str}"""
         response = await chat_completion(
             agent="session_qa.next_question",
             model=model,
-            messages=[
-                {"role": "system", "content": QUESTION_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
+            messages=_question_messages(user_content),
             temperature=temperature,
         )
-        content = (response.choices[0].message.content or "").strip()
-        if not content:
-            return _fallback_result()
-
-        content = _strip_json_fence(content)
-        parsed = json.loads(content)
-        question = (parsed.get("question") or "").strip()
-        if not question:
-            return _fallback_result()
-
-        return QuestionGenerationResult(
-            question=question,
-            difficulty=parsed.get("difficulty"),
-            question_type=parsed.get("question_type"),
-        )
-    except json.JSONDecodeError as e:
-        logger.warning("Session Q&A question gen: invalid JSON from LLM: %s", e)
-        return _fallback_result()
+        return _parse_question(response.choices[0].message.content) or _fallback_result()
     except Exception as e:
         logger.warning("Session Q&A question gen: LLM call failed: %s", e)
         return _fallback_result()
+
+
+async def generate_next_question_stream(
+    role_level: str,
+    job_entities: Dict[str, List[str]],
+    resume_entities: Dict[str, List[str]],
+    previous_messages: List[Dict[str, Any]],
+    question_type: Optional[str] = None,
+    question_index: int = 0,
+    suggested_difficulty: Optional[str] = None,
+) -> AsyncIterator[Union[str, QuestionGenerationResult]]:
+    """Streaming generate_next_question: yields question-text deltas (str), then the final result.
+
+    Same prompt, parsing and fallback as generate_next_question. If the LLM fails mid-stream the
+    final result is a fallback question, which may differ from the text already streamed.
+    """
+    if not _is_session_qa_available():
+        raise ValueError(
+            "Session Q&A agent is disabled (SESSION_QA_AGENT_ENABLED=false or OPENAI_API_KEY unset)."
+        )
+    user_content = _question_user_content(
+        role_level, job_entities, resume_entities, previous_messages,
+        question_type, question_index, suggested_difficulty,
+    )
+    try:
+        get_client()
+    except Exception as e:
+        logger.error("Session Q&A: could not create OpenAI client: %s", e)
+        yield _fallback_question(previous_messages, question_index, question_type, suggested_difficulty)
+        return
+
+    extractor = JsonStringFieldExtractor("question")
+    raw: List[str] = []
+    try:
+        async for delta in chat_completion_stream(
+            agent="session_qa.next_question",
+            model=getattr(settings, "SESSION_QA_AGENT_MODEL", "gpt-4o-mini"),
+            messages=_question_messages(user_content),
+            temperature=getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7),
+        ):
+            raw.append(delta)
+            text = extractor.feed(delta)
+            if text:
+                yield text
+    except Exception as e:
+        logger.warning("Session Q&A question gen (stream): LLM call failed: %s", e)
+        yield _fallback_question(previous_messages, question_index, question_type, suggested_difficulty)
+        return
+    yield _parse_question("".join(raw)) or _fallback_question(
+        previous_messages, question_index, question_type, suggested_difficulty
+    )
 
 
 # --- Greeting / off-topic / skip (LLM classification + redirect) ---
@@ -334,6 +417,70 @@ def _fallback_eval_result() -> AnswerEvaluationResult:
     )
 
 
+def _eval_messages(
+    question: str,
+    answer: str,
+    role_level: str,
+    job_entities: Dict[str, List[str]],
+    resume_entities: Dict[str, List[str]],
+) -> List[Dict[str, Any]]:
+    job_json = json.dumps(job_entities, ensure_ascii=False, indent=2)
+    resume_json = json.dumps(resume_entities, ensure_ascii=False, indent=2)
+
+    user_content = f"""Role level: {role_level}
+
+Question:
+{question}
+
+Candidate's answer:
+{answer}
+
+Job context (for relevance):
+{job_json}
+
+Candidate background (for relevance):
+{resume_json}"""
+    return [
+        {"role": "system", "content": EVAL_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def _parse_eval(content: Optional[str]) -> AnswerEvaluationResult:
+    """Parse the model's JSON reply; offline placeholder result if empty or invalid."""
+    content = (content or "").strip()
+    if not content:
+        return _fallback_eval_result()
+    try:
+        parsed = json.loads(_strip_json_fence(content))
+    except json.JSONDecodeError as e:
+        logger.warning("Session Q&A answer eval: invalid JSON from LLM: %s", e)
+        return _fallback_eval_result()
+    feedback = (parsed.get("feedback") or "").strip()
+    if not feedback:
+        return _fallback_eval_result()
+
+    raw_score = parsed.get("score")
+    if raw_score is None:
+        return _fallback_eval_result()
+    try:
+        score = int(raw_score)
+    except (TypeError, ValueError):
+        score = 50
+    score = max(0, min(100, score))
+
+    tags = parsed.get("dimension_tags")
+    if not isinstance(tags, list):
+        tags = []
+    dimension_tags = [str(t).strip() for t in tags if t]
+
+    return AnswerEvaluationResult(
+        feedback=feedback,
+        score=score,
+        dimension_tags=dimension_tags,
+    )
+
+
 async def evaluate_answer(
     question: str,
     answer: str,
@@ -351,23 +498,6 @@ async def evaluate_answer(
             "Session Q&A agent is disabled (SESSION_QA_AGENT_ENABLED=false or OPENAI_API_KEY unset)."
         )
 
-    job_json = json.dumps(job_entities, ensure_ascii=False, indent=2)
-    resume_json = json.dumps(resume_entities, ensure_ascii=False, indent=2)
-
-    user_content = f"""Role level: {role_level}
-
-Question:
-{question}
-
-Candidate's answer:
-{answer}
-
-Job context (for relevance):
-{job_json}
-
-Candidate background (for relevance):
-{resume_json}"""
-
     try:
         get_client()
     except Exception as e:
@@ -381,47 +511,52 @@ Candidate background (for relevance):
         response = await chat_completion(
             agent="session_qa.evaluate",
             model=model,
-            messages=[
-                {"role": "system", "content": EVAL_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
+            messages=_eval_messages(question, answer, role_level, job_entities, resume_entities),
             temperature=temperature,
         )
-        content = (response.choices[0].message.content or "").strip()
-        if not content:
-            return _fallback_eval_result()
-
-        content = _strip_json_fence(content)
-        parsed = json.loads(content)
-        feedback = (parsed.get("feedback") or "").strip()
-        if not feedback:
-            return _fallback_eval_result()
-
-        raw_score = parsed.get("score")
-        if raw_score is None:
-            return _fallback_eval_result()
-        try:
-            score = int(raw_score)
-        except (TypeError, ValueError):
-            score = 50
-        score = max(0, min(100, score))
-
-        tags = parsed.get("dimension_tags")
-        if not isinstance(tags, list):
-            tags = []
-        dimension_tags = [str(t).strip() for t in tags if t]
-
-        return AnswerEvaluationResult(
-            feedback=feedback,
-            score=score,
-            dimension_tags=dimension_tags,
-        )
-    except json.JSONDecodeError as e:
-        logger.warning("Session Q&A answer eval: invalid JSON from LLM: %s", e)
-        return _fallback_eval_result()
+        return _parse_eval(response.choices[0].message.content)
     except Exception as e:
         logger.warning("Session Q&A answer eval: LLM call failed: %s", e)
         return _fallback_eval_result()
+
+
+async def evaluate_answer_stream(
+    question: str,
+    answer: str,
+    role_level: str,
+    job_entities: Dict[str, List[str]],
+    resume_entities: Dict[str, List[str]],
+) -> AsyncIterator[Union[str, AnswerEvaluationResult]]:
+    """Streaming evaluate_answer: yields feedback-text deltas (str), then the final result."""
+    if not _is_session_qa_available():
+        raise ValueError(
+            "Session Q&A agent is disabled (SESSION_QA_AGENT_ENABLED=false or OPENAI_API_KEY unset)."
+        )
+    try:
+        get_client()
+    except Exception as e:
+        logger.error("Session Q&A: could not create OpenAI client: %s", e)
+        yield _fallback_eval_result()
+        return
+
+    extractor = JsonStringFieldExtractor("feedback")
+    raw: List[str] = []
+    try:
+        async for delta in chat_completion_stream(
+            agent="session_qa.evaluate",
+            model=getattr(settings, "SESSION_QA_AGENT_MODEL", "gpt-4o-mini"),
+            messages=_eval_messages(question, answer, role_level, job_entities, resume_entities),
+            temperature=getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7),
+        ):
+            raw.append(delta)
+            text = extractor.feed(delta)
+            if text:
+                yield text
+    except Exception as e:
+        logger.warning("Session Q&A answer eval (stream): LLM call failed: %s", e)
+        yield _fallback_eval_result()
+        return
+    yield _parse_eval("".join(raw))
 
 
 # --- Session summary (strengths / areas_for_improvement) ---
@@ -664,6 +799,32 @@ Rules:
 - Respond with a single string containing your reply. Do not use JSON."""
 
 
+def _tutor_messages(
+    role_level: str,
+    job_entities: Dict[str, List[str]],
+    resume_entities: Dict[str, List[str]],
+    previous_messages: List[Dict[str, Any]],
+    user_message: str,
+) -> List[Dict[str, Any]]:
+    job_json = json.dumps(job_entities, ensure_ascii=False, indent=2)
+    resume_json = json.dumps(resume_entities, ensure_ascii=False, indent=2)
+
+    system_content = f"{TUTOR_CHAT_SYSTEM_PROMPT}\n\nContext:\nRole level: {role_level}\n\nJob posting:\n{job_json}\n\nResume:\n{resume_json}"
+
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
+
+    # Add previous messages
+    for msg in previous_messages[-30:]:  # Limit history to last 30 messages
+        role = "user" if msg.get("sender") == "USER" else "assistant"
+        content = msg.get("content", "")
+        if content:
+            messages.append({"role": role, "content": content})
+
+    # Add current user message
+    messages.append({"role": "user", "content": user_message})
+    return messages
+
+
 async def generate_tutor_chat_reply(
     role_level: str,
     job_entities: Dict[str, List[str]],
@@ -679,22 +840,7 @@ async def generate_tutor_chat_reply(
             "Session Q&A agent is disabled (SESSION_QA_AGENT_ENABLED=false or OPENAI_API_KEY unset)."
         )
 
-    job_json = json.dumps(job_entities, ensure_ascii=False, indent=2)
-    resume_json = json.dumps(resume_entities, ensure_ascii=False, indent=2)
-    
-    system_content = f"{TUTOR_CHAT_SYSTEM_PROMPT}\n\nContext:\nRole level: {role_level}\n\nJob posting:\n{job_json}\n\nResume:\n{resume_json}"
-
-    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
-    
-    # Add previous messages
-    for msg in previous_messages[-30:]:  # Limit history to last 30 messages
-        role = "user" if msg.get("sender") == "USER" else "assistant"
-        content = msg.get("content", "")
-        if content:
-            messages.append({"role": role, "content": content})
-            
-    # Add current user message
-    messages.append({"role": "user", "content": user_message})
+    messages = _tutor_messages(role_level, job_entities, resume_entities, previous_messages, user_message)
 
     try:
         get_client()
@@ -715,7 +861,7 @@ async def generate_tutor_chat_reply(
         content = (response.choices[0].message.content or "").strip()
         if not content:
             raise ValueError("LLM returned empty content.")
-            
+
         return content
     except Exception as e:
         if isinstance(e, ValueError):
@@ -723,3 +869,39 @@ async def generate_tutor_chat_reply(
         logger.warning("Session Q&A tutor chat: LLM call failed: %s", e)
         raise ValueError("Tutor chat generation failed.") from e
 
+
+async def generate_tutor_chat_reply_stream(
+    role_level: str,
+    job_entities: Dict[str, List[str]],
+    resume_entities: Dict[str, List[str]],
+    previous_messages: List[Dict[str, Any]],
+    user_message: str,
+) -> AsyncIterator[str]:
+    """Streaming generate_tutor_chat_reply: yields text deltas. Raises ValueError like the non-streaming version."""
+    if not _is_session_qa_available():
+        raise ValueError(
+            "Session Q&A agent is disabled (SESSION_QA_AGENT_ENABLED=false or OPENAI_API_KEY unset)."
+        )
+    messages = _tutor_messages(role_level, job_entities, resume_entities, previous_messages, user_message)
+    try:
+        get_client()
+    except Exception as e:
+        logger.error("Session Q&A: could not create OpenAI client: %s", e)
+        raise ValueError("OpenAI client unavailable.") from e
+
+    produced = False
+    try:
+        async for delta in chat_completion_stream(
+            agent="session_qa.tutor",
+            model=getattr(settings, "SESSION_QA_AGENT_MODEL", "gpt-4o-mini"),
+            messages=messages,
+            temperature=getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7),
+        ):
+            if delta:
+                produced = True
+                yield delta
+    except Exception as e:
+        logger.warning("Session Q&A tutor chat (stream): LLM call failed: %s", e)
+        raise ValueError("Tutor chat generation failed.") from e
+    if not produced:
+        raise ValueError("LLM returned empty content.")
