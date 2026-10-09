@@ -6,6 +6,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.rate_limit import llm_rate_limit
 from app.api.deps import get_current_user, get_db
 from app.api.users.schemas import (
     HomeSummaryCard,
@@ -33,6 +34,7 @@ LAST_N_SESSIONS = 5
 
 @router.get(
     "/me/readiness",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[dict],
     name="Get combined readiness",
     summary="Get combined readiness score (CV + sessions + gap) for current user.",

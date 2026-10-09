@@ -10,6 +10,7 @@ from typing import Dict, List
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.services.llm import chat_completion, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +78,7 @@ async def validate_and_correct_entities(
     )
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.warning("Resume entity agent: could not create OpenAI client: %s", e)
         return entities
@@ -96,7 +95,8 @@ Current extracted entities (JSON):
 Return a single JSON object with keys NAME, EMAIL, SKILL, OCCUPATION, EDUCATION, EXPERIENCE. Each value is a list of strings. Only include information that appears in the resume text above."""
 
     try:
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="resume_entity.validate",
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},

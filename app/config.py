@@ -72,6 +72,15 @@ class Settings(BaseSettings):
     COVER_LETTER_AGENT_MODEL: str = "gpt-4o-mini"
     COVER_LETTER_AGENT_TEMPERATURE: float = 0.7
 
+    # Shared LLM client (app/services/llm.py)
+    LLM_TIMEOUT_SECONDS: float = 60.0
+    # Retries on connection errors, 408/409/429 and 5xx (OpenAI SDK exponential backoff)
+    LLM_MAX_RETRIES: int = 2
+    # Persist one row per LLM call (model, tokens, cost, latency) to llm_usage
+    LLM_USAGE_TRACKING_ENABLED: bool = True
+    # Per-user limit on LLM-backed endpoints (requests per minute, per process). 0 disables.
+    LLM_RATE_LIMIT_PER_MINUTE: int = 30
+
     # JWT authentication
     JWT_SECRET: str = DEFAULT_JWT_SECRET
 

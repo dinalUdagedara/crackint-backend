@@ -28,6 +28,7 @@ from app.agents.session_qa_agent import (
 )
 from app.models import JobPosting, Message, PrepSession, Resume
 from app.schemas.common import RoleLevel, SenderType, SessionMode
+from app.services.llm import current_session_id as llm_current_session_id
 
 # Update session summary (LLM) only every N FEEDBACK messages to reduce cost.
 SUMMARY_UPDATE_EVERY_N = 10
@@ -129,6 +130,7 @@ async def load_context(
     session_obj = await db.get(PrepSession, session_id)
     if session_obj is None:
         raise HTTPException(status_code=404, detail="Prep session not found.")
+    llm_current_session_id.set(session_obj.id)  # attribute LLM usage in this request to the session
 
     resume_entities: Dict[str, List[str]] = {}
     if session_obj.resume_id:

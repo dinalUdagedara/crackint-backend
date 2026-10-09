@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.fallback import pick_fallback_question
 from app.config import settings
+from app.services.llm import chat_completion, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +149,7 @@ Requested question type (or leave empty to choose): {qtype_str}"""
         return QuestionGenerationResult(question=fq, difficulty=fd, question_type=ft)
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("Session Q&A: could not create OpenAI client: %s", e)
         return _fallback_result()
@@ -159,7 +158,8 @@ Requested question type (or leave empty to choose): {qtype_str}"""
     temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
 
     try:
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="session_qa.next_question",
             model=model,
             messages=[
                 {"role": "system", "content": QUESTION_SYSTEM_PROMPT},
@@ -260,9 +260,7 @@ User message:
 {user_message}"""
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("Session Q&A: could not create OpenAI client: %s", e)
         raise ValueError("OpenAI client unavailable.") from e
@@ -271,7 +269,8 @@ User message:
     temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
 
     try:
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="session_qa.classify",
             model=model,
             messages=[
                 {"role": "system", "content": REDIRECT_SYSTEM_PROMPT},
@@ -370,9 +369,7 @@ Candidate background (for relevance):
 {resume_json}"""
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("Session Q&A: could not create OpenAI client: %s", e)
         return _fallback_eval_result()
@@ -381,7 +378,8 @@ Candidate background (for relevance):
     temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
 
     try:
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="session_qa.evaluate",
             model=model,
             messages=[
                 {"role": "system", "content": EVAL_SYSTEM_PROMPT},
@@ -504,9 +502,7 @@ Candidate background (optional):
 Produce a short session-level summary as JSON: "strengths", "areas_for_improvement"."""
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("Session Q&A: could not create OpenAI client: %s", e)
         raise ValueError("OpenAI client unavailable.") from e
@@ -515,7 +511,8 @@ Produce a short session-level summary as JSON: "strengths", "areas_for_improveme
     temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
 
     try:
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="session_qa.summary",
             model=model,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
@@ -610,9 +607,7 @@ Most recent question in this session:
 Return a single JSON object with key "title" containing a short, human-friendly name for this session."""
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("Session Q&A: could not create OpenAI client: %s", e)
         raise ValueError("OpenAI client unavailable.") from e
@@ -621,7 +616,8 @@ Return a single JSON object with key "title" containing a short, human-friendly 
     temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.5)
 
     try:
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="session_qa.title",
             model=model,
             messages=[
                 {"role": "system", "content": TITLE_SYSTEM_PROMPT},
@@ -701,8 +697,7 @@ async def generate_tutor_chat_reply(
     messages.append({"role": "user", "content": user_message})
 
     try:
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("Session Q&A: could not create OpenAI client: %s", e)
         raise ValueError("OpenAI client unavailable.") from e
@@ -711,7 +706,8 @@ async def generate_tutor_chat_reply(
     temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
 
     try:
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="session_qa.tutor",
             model=model,
             messages=messages,
             temperature=temperature,

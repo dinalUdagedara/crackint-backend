@@ -14,6 +14,7 @@ from app.api.cover_letter.schemas import (
     CoverLetterRead,
     CoverLetterUpdateRequest,
 )
+from app.api.rate_limit import llm_rate_limit
 from app.api.deps import get_current_user, get_db
 from app.common.http_response_model import CommonResponse
 from app.models import User
@@ -30,6 +31,7 @@ router = APIRouter()
 
 @router.post(
     "/generate",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[CoverLetterRead],
     name="Generate cover letter",
     summary="Generate a tailored cover letter for a resume + job (optionally inside a prep session).",

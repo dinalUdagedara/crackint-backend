@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.resume_job_fit_agent import analyze_resume_job_fit
+from app.api.rate_limit import llm_rate_limit
 from app.api.deps import get_current_user, get_db
 from app.api.match.schemas import (
     LocationSuitability,
@@ -94,6 +95,7 @@ async def get_skill_gap(
 
 @router.post(
     "/skill-gap",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[SkillGapResponse],
     name="Skill gap analysis",
     summary="Compare resume vs job posting; return missing skills, weak areas, suggestions, alerts.",

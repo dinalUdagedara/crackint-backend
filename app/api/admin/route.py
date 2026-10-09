@@ -1,6 +1,7 @@
 """Admin API routes: users and global session listing."""
 
 import uuid as uuid_pkg
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -12,11 +13,13 @@ from app.api.admin.schemas import (
     AdminUserDeletePayload,
     AdminUserListItem,
     AdminUserUpdate,
+    LLMUsageSummary,
 )
 from app.api.admin.service import (
     delete_user_and_all_data,
     list_sessions_admin,
     list_users_admin,
+    summarize_llm_usage,
 )
 from app.api.deps import get_current_admin_user, get_db
 from app.common.http_response_model import CommonResponse, PageMeta
@@ -184,4 +187,25 @@ async def admin_list_sessions(
         message="Sessions retrieved successfully",
         payload=items,
         meta=meta,
+    )
+
+
+@router.get(
+    "/llm-usage",
+    response_model=CommonResponse[LLMUsageSummary],
+    name="Admin LLM usage",
+    summary="LLM calls, tokens and estimated cost, optionally filtered by user, session, or start time.",
+)
+async def admin_llm_usage(
+    user_id: Optional[uuid_pkg.UUID] = Query(default=None, description="Only calls attributed to this user."),
+    session_id: Optional[uuid_pkg.UUID] = Query(default=None, description="Only calls made for this prep session."),
+    since: Optional[datetime] = Query(default=None, description="Only calls at or after this time (ISO 8601)."),
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    summary = await summarize_llm_usage(db, user_id=user_id, session_id=session_id, since=since)
+    return CommonResponse(
+        success=True,
+        message="LLM usage retrieved successfully",
+        payload=summary,
     )
