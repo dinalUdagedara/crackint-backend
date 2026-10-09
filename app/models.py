@@ -171,6 +171,11 @@ class PrepSession(UUIDModel, TimestampModel, table=True):
         nullable=False,
         description="Session status, e.g. ACTIVE or COMPLETED",
     )
+    role_level: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        description="Seniority the questions target (INTERN, ASE, SSE, OTHER). Inferred from the job posting or set by the user.",
+    )
     readiness_score: Optional[float] = Field(
         default=None,
         nullable=True,
