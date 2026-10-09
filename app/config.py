@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_DEFAULT_REGION: str = "us-east-1"
 
+    # Speech-to-text (AWS Transcribe over Socket.IO): max length of one recording, in seconds
+    STT_MAX_STREAM_SECONDS: int = 300
+
     # S3 uploads (cover images, etc.). If set, POST /uploads/image will upload to this bucket.
     S3_UPLOADS_BUCKET: Optional[str] = None
     # Region for uploads bucket (defaults to AWS_DEFAULT_REGION if not set)
