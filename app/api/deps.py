@@ -3,6 +3,7 @@ Shared dependencies for API routes (e.g. database session, current user).
 """
 
 import uuid
+from contextlib import aclosing
 from typing import AsyncGenerator
 
 from fastapi import Depends, HTTPException, Request, status
@@ -16,8 +17,11 @@ from app.models import User
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Yield a database session; rollback on exception, close on exit."""
-    async for session in db_session():
-        yield session
+    # aclosing: if the request raises (e.g. a 404 from a dependency), close the inner
+    # generator now instead of leaving the connection to be reclaimed by GC later.
+    async with aclosing(db_session()) as sessions:
+        async for session in sessions:
+            yield session
 
 
 async def get_current_user(
