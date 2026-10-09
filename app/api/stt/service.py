@@ -63,6 +63,9 @@ class SpeechToTextService:
                 )
 
     async def start_audio(self, sid):
+        # A second START_AUDIO would otherwise orphan the running Transcribe stream.
+        if sid in self.active_streams:
+            await self.end_audio(sid)
         try:
             # Create a new TranscribeStreamingClient for this session
             transcribe_client = TranscribeStreamingClient(
@@ -83,8 +86,20 @@ class SpeechToTextService:
 
             # Run the handler in the background
             asyncio.create_task(self.run_handler(handler, sid))
+            # Cap stream length so a forgotten mic can't run up Transcribe cost.
+            self.active_streams[sid]["timeout_task"] = asyncio.create_task(
+                self._end_after_timeout(sid, stream)
+            )
         except Exception as e:
             logger.error(f"Error starting stream transcription for session {sid}: {e}")
+
+    async def _end_after_timeout(self, sid, stream):
+        await asyncio.sleep(settings.STT_MAX_STREAM_SECONDS)
+        entry = self.active_streams.get(sid)
+        if entry is not None and entry["stream"] is stream:
+            logger.info(f"Session {sid} - STT stream hit max duration, ending")
+            await self.end_audio(sid)
+            await sio_server.emit("STT_TIMEOUT", {"max_seconds": settings.STT_MAX_STREAM_SECONDS}, to=sid)
 
     async def run_handler(self, handler, sid):
         try:
@@ -104,19 +119,17 @@ class SpeechToTextService:
             logger.debug(f"No active stream for session {sid}")
 
     async def end_audio(self, sid):
-        if sid in self.active_streams:
-            try:
-                await self.active_streams[sid]["stream"].input_stream.end_stream()
-                del self.active_streams[sid]
-            except Exception as e:
-                logger.error(f"Error ending stream for session {sid}: {e}")
-        else:
+        entry = self.active_streams.pop(sid, None)
+        if entry is None:
             logger.debug(f"No active stream to end for session {sid}")
+            return
+        timeout_task = entry.get("timeout_task")
+        if timeout_task is not None and timeout_task is not asyncio.current_task():
+            timeout_task.cancel()
+        try:
+            await entry["stream"].input_stream.end_stream()
+        except Exception as e:
+            logger.error(f"Error ending stream for session {sid}: {e}")
 
     async def handle_disconnect(self, sid):
-        if sid in self.active_streams:
-            try:
-                await self.active_streams[sid]["stream"].input_stream.end_stream()
-                del self.active_streams[sid]
-            except Exception as e:
-                logger.error(f"Error ending stream for disconnected session {sid}: {e}")
+        await self.end_audio(sid)
