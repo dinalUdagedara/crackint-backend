@@ -134,6 +134,28 @@ class FakeAgents:
         self._record("generate_tutor_chat_reply", **kwargs)
         return "Tutor reply."
 
+    # Streaming variants: same results, text split into small deltas.
+
+    async def generate_next_question_stream(self, **kwargs):
+        result = await self.generate_next_question(**kwargs)
+        for part in _chunks(result.question):
+            yield part
+        yield result
+
+    async def evaluate_answer_stream(self, **kwargs):
+        result = await self.evaluate_answer(**kwargs)
+        for part in _chunks(result.feedback):
+            yield part
+        yield result
+
+    async def generate_tutor_chat_reply_stream(self, **kwargs):
+        for part in _chunks(await self.generate_tutor_chat_reply(**kwargs)):
+            yield part
+
+
+def _chunks(text: str, size: int = 4) -> List[str]:
+    return [text[i : i + size] for i in range(0, len(text), size)]
+
 
 @pytest.fixture
 def fake_agents(monkeypatch) -> FakeAgents:

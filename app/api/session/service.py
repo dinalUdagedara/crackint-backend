@@ -6,9 +6,10 @@ Agent calls raise ValueError when the LLM is unavailable; this module turns thos
 HTTP 503 so routes stay thin.
 """
 
+import asyncio
 import uuid as uuid_pkg
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -20,9 +21,12 @@ from app.agents.session_qa_agent import (
     QuestionGenerationResult,
     classify_and_redirect,
     evaluate_answer,
+    evaluate_answer_stream,
     generate_next_question,
+    generate_next_question_stream,
     generate_session_title,
     generate_tutor_chat_reply,
+    generate_tutor_chat_reply_stream,
     summarize_session_feedback,
 )
 from app.models import JobPosting, Message, PrepSession, Resume
@@ -261,6 +265,27 @@ async def ask_next_question(
     Unless the caller asks for a difficulty / question type, they adapt to the session so far:
     difficulty follows recent scores (see app.services.difficulty), and the type mix is balanced.
     """
+    plan = _plan_question(ctx, extra_history, question_type, prefer_difficulty)
+    try:
+        result = await generate_next_question(**plan.agent_kwargs)
+    except ValueError as e:
+        raise _agent_unavailable(e) from e
+    return await _save_question(db, ctx, plan, result), result
+
+
+@dataclass
+class _QuestionPlan:
+    agent_kwargs: Dict[str, Any]
+    difficulty: str
+    difficulty_reason: str
+
+
+def _plan_question(
+    ctx: SessionContext,
+    extra_history: Sequence[Message],
+    question_type: Optional[str],
+    prefer_difficulty: Optional[str],
+) -> _QuestionPlan:
     question_index = ctx.question_count
     perf = _performance([*ctx.messages, *extra_history])
     if prefer_difficulty:
@@ -268,27 +293,29 @@ async def ask_next_question(
     else:
         choice = choose_difficulty(question_index, perf.last_question_difficulty, perf.scores)
         difficulty, difficulty_reason = choice.difficulty, choice.reason
-    question_type = question_type or choose_question_type(perf.question_types)
-
-    try:
-        result = await generate_next_question(
+    return _QuestionPlan(
+        agent_kwargs=dict(
             role_level=ctx.role_level,
             job_entities=ctx.job_entities,
             resume_entities=ctx.resume_entities,
             previous_messages=ctx.history(extra_history),
-            question_type=question_type,
+            question_type=question_type or choose_question_type(perf.question_types),
             question_index=question_index,
             suggested_difficulty=difficulty,
-        )
-    except ValueError as e:
-        raise _agent_unavailable(e) from e
+        ),
+        difficulty=difficulty,
+        difficulty_reason=difficulty_reason,
+    )
 
-    meta: Dict[str, Any] = {"difficulty_reason": difficulty_reason, "role_level": ctx.role_level}
-    meta["difficulty"] = result.difficulty or difficulty
+
+async def _save_question(
+    db: AsyncSession, ctx: SessionContext, plan: _QuestionPlan, result: QuestionGenerationResult
+) -> Message:
+    meta: Dict[str, Any] = {"difficulty_reason": plan.difficulty_reason, "role_level": ctx.role_level}
+    meta["difficulty"] = result.difficulty or plan.difficulty
     if result.question_type:
         meta["question_type"] = result.question_type
-    message = await save_message(db, ctx.session.id, SenderType.ASSISTANT, "QUESTION", result.question, meta)
-    return message, result
+    return await save_message(db, ctx.session.id, SenderType.ASSISTANT, "QUESTION", result.question, meta)
 
 
 async def save_redirect(db: AsyncSession, ctx: SessionContext, content: str) -> Message:
@@ -320,12 +347,14 @@ async def evaluate_and_save_feedback(
         )
     except ValueError as e:
         raise _agent_unavailable(e) from e
+    return await _save_feedback(db, ctx, result), result
 
+
+async def _save_feedback(db: AsyncSession, ctx: SessionContext, result: AnswerEvaluationResult) -> Message:
     meta: Dict[str, Any] = {"score": str(result.score)}
     if result.dimension_tags:
         meta["dimension_tags"] = ",".join(result.dimension_tags)
-    message = await save_message(db, ctx.session.id, SenderType.ASSISTANT, "FEEDBACK", result.feedback, meta)
-    return message, result
+    return await save_message(db, ctx.session.id, SenderType.ASSISTANT, "FEEDBACK", result.feedback, meta)
 
 
 async def update_session_after_feedback(db: AsyncSession, ctx: SessionContext, last_question: str) -> None:
@@ -472,3 +501,152 @@ async def chat_turn(
         return new_messages, "Chat turn processed: feedback stored (next question generation failed)."
     new_messages.append(next_question)
     return new_messages, "Chat turn processed: feedback and next question stored."
+
+
+# --- Streaming chat turn ----------------------------------------------------------
+
+StreamEvent = Tuple[str, Dict[str, Any]]
+
+
+class _StreamError(Exception):
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+async def _stream_question(
+    db: AsyncSession,
+    ctx: SessionContext,
+    extra_history: Sequence[Message],
+    prefer_difficulty: Optional[str],
+) -> AsyncIterator[Any]:
+    """Yields ("question.delta", text) events, then the stored QUESTION Message."""
+    plan = _plan_question(ctx, extra_history, None, prefer_difficulty)
+    result: Optional[QuestionGenerationResult] = None
+    try:
+        async for item in generate_next_question_stream(**plan.agent_kwargs):
+            if isinstance(item, str):
+                yield ("question.delta", {"text": item})
+            else:
+                result = item
+    except ValueError as e:
+        raise _StreamError(503, str(e)) from e
+    assert result is not None
+    yield await _save_question(db, ctx, plan, result)
+
+
+async def _speculative_evaluation(
+    ctx: SessionContext, question: str, answer: str, queue: "asyncio.Queue[Any]"
+) -> None:
+    """Run the streaming evaluation into a queue; ends with the result or an exception."""
+    try:
+        async for item in evaluate_answer_stream(
+            question=question,
+            answer=answer,
+            role_level=ctx.role_level,
+            job_entities=ctx.job_entities,
+            resume_entities=ctx.resume_entities,
+        ):
+            await queue.put(item)
+    except Exception as e:  # surfaced to the consumer
+        await queue.put(e)
+
+
+async def chat_turn_stream(
+    db: AsyncSession,
+    ctx: SessionContext,
+    content: str,
+    prefer_difficulty: Optional[str] = None,
+) -> AsyncIterator[StreamEvent]:
+    """Streaming version of chat_turn. Stores exactly the same messages.
+
+    Events (name, data):
+      message            {"message": Message}   a stored message (user answer, feedback, question, ...)
+      feedback.delta     {"text": str}          evaluation / tutor / redirect text as it is generated
+      question.delta     {"text": str}          next question text as it is generated
+      done               {"status": str}
+      error              {"status": int, "detail": str}
+
+    For a reply to a question, evaluation starts in parallel with classification; its text is
+    held back until classification confirms a substantive answer (and discarded otherwise).
+    """
+    user_message = await save_message(db, ctx.session.id, SenderType.USER, "ANSWER", content)
+    yield ("message", {"message": user_message})
+
+    try:
+        if ctx.session.mode == SessionMode.TUTOR_CHAT.value:
+            parts: List[str] = []
+            try:
+                async for delta in generate_tutor_chat_reply_stream(
+                    role_level=ctx.role_level,
+                    job_entities=ctx.job_entities,
+                    resume_entities=ctx.resume_entities,
+                    previous_messages=ctx.history(),
+                    user_message=content,
+                ):
+                    parts.append(delta)
+                    yield ("feedback.delta", {"text": delta})
+            except ValueError as e:
+                raise _StreamError(503, str(e)) from e
+            reply = await save_redirect(db, ctx, "".join(parts).strip())
+            yield ("message", {"message": reply})
+            yield ("done", {"status": "Chat turn processed: tutor reply generated."})
+            return
+
+        question = ctx.last_question
+        if not question:
+            async for item in _stream_question(db, ctx, (user_message,), prefer_difficulty):
+                yield item if isinstance(item, tuple) else ("message", {"message": item})
+            yield ("done", {"status": "Chat turn processed: first question generated."})
+            return
+
+        queue: "asyncio.Queue[Any]" = asyncio.Queue()
+        evaluation_task = asyncio.create_task(_speculative_evaluation(ctx, question, content, queue))
+        try:
+            try:
+                redirect_message = await classify_and_redirect(question=question, user_message=content)
+            except ValueError as e:
+                raise _StreamError(503, str(e)) from e
+
+            if redirect_message == NEXT_QUESTION_SENTINEL or redirect_message:
+                evaluation_task.cancel()
+                if redirect_message == NEXT_QUESTION_SENTINEL:
+                    async for item in _stream_question(db, ctx, (user_message,), prefer_difficulty):
+                        yield item if isinstance(item, tuple) else ("message", {"message": item})
+                    yield ("done", {"status": "Chat turn processed: next question (user skipped)."})
+                else:
+                    yield ("message", {"message": await save_redirect(db, ctx, redirect_message)})
+                    yield ("done", {"status": "Chat turn processed: redirect response (greeting/off-topic)."})
+                return
+
+            evaluation: Optional[AnswerEvaluationResult] = None
+            while evaluation is None:
+                item = await queue.get()
+                if isinstance(item, ValueError):
+                    raise _StreamError(503, str(item))
+                if isinstance(item, Exception):
+                    raise item
+                if isinstance(item, str):
+                    yield ("feedback.delta", {"text": item})
+                else:
+                    evaluation = item
+        finally:
+            if not evaluation_task.done():
+                evaluation_task.cancel()
+
+        feedback = await _save_feedback(db, ctx, evaluation)
+        yield ("message", {"message": feedback})
+
+        try:
+            async for item in _stream_question(db, ctx, (user_message, feedback), prefer_difficulty):
+                yield item if isinstance(item, tuple) else ("message", {"message": item})
+            status = "Chat turn processed: feedback and next question stored."
+        except _StreamError:
+            # If next-question generation fails, still keep the feedback
+            status = "Chat turn processed: feedback stored (next question generation failed)."
+        # Title / summary after the user already has the reply (off the critical path).
+        await update_session_after_feedback(db, ctx, question)
+        yield ("done", {"status": status})
+    except _StreamError as e:
+        yield ("error", {"status": e.status, "detail": e.detail})
