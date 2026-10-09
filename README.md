@@ -72,6 +72,13 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 4. Open docs: [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
 
+## Production configuration
+
+Set `ENVIRONMENT=production` in deployed environments. The app then refuses to start unless:
+
+- `JWT_SECRET` is set to a unique value of at least 32 characters (e.g. `openssl rand -hex 32`), and
+- `CORS_ORIGINS` lists explicit frontend origins (comma-separated, no `*`). The same list is used for the HTTP API and Socket.IO.
+
 ## NER model paths
 
 **Resume NER**  

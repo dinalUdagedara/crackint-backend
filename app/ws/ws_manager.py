@@ -2,10 +2,12 @@ import logging
 
 import socketio
 
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-sio_server = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+_cors = "*" if settings.cors_origins_list == ["*"] else settings.cors_origins_list
+sio_server = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=_cors)
 
 
 def create_sio_app(other_app=None):
