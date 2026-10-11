@@ -31,9 +31,16 @@ from app.agents.session_qa_agent import (
     summarize_session_feedback,
 )
 from app.agents.session_report_agent import generate_session_report
-from app.api.session.schemas import SessionReport, SessionReportItem, StarBreakdownRead
+from app.api.session.schemas import (
+    DeliveryRead,
+    DeliverySummary,
+    SessionReport,
+    SessionReportItem,
+    StarBreakdownRead,
+)
 from app.models import JobPosting, Message, PrepSession, Resume
 from app.schemas.common import RoleLevel, SenderType, SessionMode, SessionStatus
+from app.services.delivery import analyze_delivery, pace_hint, parse_fillers
 from app.services.difficulty import choose_difficulty, choose_question_type, infer_role_level
 from app.services.llm import current_session_id as llm_current_session_id
 from app.services.topic_mastery import due_weak_topics, normalize_topic, record_attempt
@@ -453,6 +460,13 @@ async def update_session_after_feedback(db: AsyncSession, ctx: SessionContext, l
 # --- Flows ------------------------------------------------------------------
 
 
+def _answer_meta(content: str, speaking_seconds: Optional[float]) -> Dict[str, Any]:
+    """Delivery metrics for spoken answers; plain typed answers have no meta."""
+    if speaking_seconds is None:
+        return {}
+    return {k: v for k, v in analyze_delivery(content, speaking_seconds).items() if v is not None}
+
+
 @dataclass
 class AnswerOutcome:
     """Result of replying to the current question.
@@ -499,12 +513,13 @@ async def chat_turn(
     ctx: SessionContext,
     content: str,
     prefer_difficulty: Optional[str] = None,
+    speaking_seconds: Optional[float] = None,
 ) -> Tuple[List[Message], str]:
     """Unified chat turn. Stores the USER message, then replies depending on mode and state.
 
     Returns the messages created during the turn (in order) and a status message.
     """
-    user_message = await save_message(db, ctx.session.id, SenderType.USER, "ANSWER", content)
+    user_message = await save_message(db, ctx.session.id, SenderType.USER, "ANSWER", content, _answer_meta(content, speaking_seconds))
     new_messages: List[Message] = [user_message]
 
     if ctx.session.mode == SessionMode.TUTOR_CHAT.value:
@@ -599,6 +614,7 @@ async def chat_turn_stream(
     ctx: SessionContext,
     content: str,
     prefer_difficulty: Optional[str] = None,
+    speaking_seconds: Optional[float] = None,
 ) -> AsyncIterator[StreamEvent]:
     """Streaming version of chat_turn. Stores exactly the same messages.
 
@@ -612,7 +628,7 @@ async def chat_turn_stream(
     For a reply to a question, evaluation starts in parallel with classification; its text is
     held back until classification confirms a substantive answer (and discarded otherwise).
     """
-    user_message = await save_message(db, ctx.session.id, SenderType.USER, "ANSWER", content)
+    user_message = await save_message(db, ctx.session.id, SenderType.USER, "ANSWER", content, _answer_meta(content, speaking_seconds))
     yield ("message", {"message": user_message})
 
     try:
@@ -755,6 +771,51 @@ def _basic_strengths_and_weak_topics(items: List[SessionReportItem]) -> Tuple[Li
     return strengths, weak
 
 
+def _int(value: Any) -> Optional[int]:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _delivery(answer: Message) -> Optional[DeliveryRead]:
+    meta = answer.meta or {}
+    if meta.get("spoken") != "true":
+        return None
+    wpm = _int(meta.get("wpm"))
+    try:
+        seconds = float(meta.get("speaking_seconds"))
+    except (TypeError, ValueError):
+        seconds = None
+    return DeliveryRead(
+        speaking_seconds=seconds,
+        word_count=_int(meta.get("word_count")),
+        wpm=wpm,
+        pace=pace_hint(wpm),
+        filler_count=_int(meta.get("filler_count")) or 0,
+        fillers=parse_fillers(meta.get("fillers")),
+    )
+
+
+def _delivery_summary(items: List[SessionReportItem]) -> Optional[DeliverySummary]:
+    spoken = [i.delivery for i in items if i.delivery is not None]
+    if not spoken:
+        return None
+    rates = [d.wpm for d in spoken if d.wpm is not None]
+    totals: Dict[str, int] = {}
+    for d in spoken:
+        for name, n in d.fillers.items():
+            totals[name] = totals.get(name, 0) + n
+    avg_wpm = round(sum(rates) / len(rates)) if rates else None
+    return DeliverySummary(
+        spoken_answers=len(spoken),
+        average_wpm=avg_wpm,
+        pace=pace_hint(avg_wpm),
+        total_fillers=sum(d.filler_count for d in spoken),
+        top_fillers=dict(sorted(totals.items(), key=lambda kv: -kv[1])[:5]),
+    )
+
+
 async def build_report(ctx: SessionContext) -> SessionReport:
     """Report from stored messages, enriched by the report agent (model answers, STAR, topics)
     when available; a basic report otherwise."""
@@ -771,6 +832,7 @@ async def build_report(ctx: SessionContext) -> SessionReport:
             question_type=(a.question.meta or {}).get("question_type"),
             dimension_tags=_tags(a.feedback),
             topic=(a.feedback.meta or {}).get("topic"),
+            delivery=_delivery(a.answer),
         )
         for i, a in enumerate(answered, 1)
     ]
@@ -784,6 +846,7 @@ async def build_report(ctx: SessionContext) -> SessionReport:
         items=items,
     )
     report.strengths, report.weak_topics = _basic_strengths_and_weak_topics(items)
+    report.delivery = _delivery_summary(items)
     if not items:
         return report
 
