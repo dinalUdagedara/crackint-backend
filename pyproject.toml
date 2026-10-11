@@ -25,6 +25,7 @@ alembic = ">=1.13.0"
 psycopg2-binary = ">=2.9.0"
 python-jose = { extras = ["cryptography"], version = ">=3.3.0" }
 google-auth = ">=2.0.0"
+requests = ">=2.31.0"
 passlib = { extras = ["bcrypt"], version = ">=1.7.4" }
 openai = ">=1.0.0"
 pillow = ">=10.0.0"
