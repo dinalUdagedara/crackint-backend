@@ -34,6 +34,9 @@ MODEL_PRICES_PER_1M: Dict[str, tuple[float, float]] = {
     "gpt-4.1": (2.00, 8.00),
 }
 
+# USD per 1M input characters for text-to-speech models.
+TTS_PRICES_PER_1M_CHARS: Dict[str, float] = {"tts-1": 15.0, "tts-1-hd": 30.0}
+
 _client = None
 _client_key: Optional[str] = None
 
@@ -215,6 +218,38 @@ async def chat_completion_stream(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 cost_usd=estimate_cost_usd(model, prompt_tokens, completion_tokens) if success else None,
+                latency_ms=int((time.monotonic() - start) * 1000),
+                success=success,
+                user_id=user_id,
+                session_id=session_id,
+                error=error,
+            )
+        )
+
+
+async def synthesize_speech(*, text: str, model: str, voice: str) -> bytes:
+    """Text-to-speech (mp3). Usage is recorded with prompt_tokens = characters (agent "tts")."""
+    client = get_client()
+    start = time.monotonic()
+    user_id, session_id = current_user_id.get(), current_session_id.get()
+    success, error = False, None
+    try:
+        response = await client.audio.speech.create(model=model, voice=voice, input=text, response_format="mp3")
+        audio = response.content
+        success = True
+        return audio
+    except Exception as e:
+        error = type(e).__name__
+        raise
+    finally:
+        price = TTS_PRICES_PER_1M_CHARS.get(model)
+        await record_usage(
+            UsageRecord(
+                agent="tts",
+                model=model,
+                prompt_tokens=len(text),
+                completion_tokens=0,
+                cost_usd=round(len(text) * price / 1_000_000, 6) if success and price is not None else None,
                 latency_ms=int((time.monotonic() - start) * 1000),
                 success=success,
                 user_id=user_id,

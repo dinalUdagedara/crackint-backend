@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_DEFAULT_REGION: str = "us-east-1"
 
+    # Text-to-speech for voice mock interviews (OpenAI). If disabled/unavailable the
+    # frontend falls back to the browser's speechSynthesis.
+    TTS_ENABLED: bool = True
+    TTS_MODEL: str = "tts-1"
+    TTS_VOICE: str = "alloy"
+    TTS_MAX_CHARS: int = 1000
+
     # Speech-to-text (AWS Transcribe over Socket.IO): max length of one recording, in seconds
     STT_MAX_STREAM_SECONDS: int = 300
 

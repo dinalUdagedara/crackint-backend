@@ -286,6 +286,12 @@ class ChatRequest(BaseModel):
         default=None,
         description="When a next question is generated this turn, prefer this difficulty (easy/medium/hard). If omitted, difficulty adapts to recent scores.",
     )
+    speaking_seconds: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=3600,
+        description="For spoken answers (voice mock): how long the candidate spoke. Enables delivery metrics (wpm, filler words).",
+    )
 
 
 class ChatTurnPayload(BaseModel):
@@ -310,6 +316,25 @@ class StarBreakdownRead(BaseModel):
     note: Optional[str] = None
 
 
+class DeliveryRead(BaseModel):
+    """How a spoken answer was delivered (voice mock interviews)."""
+
+    speaking_seconds: Optional[float] = None
+    word_count: Optional[int] = None
+    wpm: Optional[int] = None
+    pace: Optional[Literal["slow", "good", "fast"]] = None
+    filler_count: int = 0
+    fillers: Dict[str, int] = Field(default_factory=dict)
+
+
+class DeliverySummary(BaseModel):
+    spoken_answers: int
+    average_wpm: Optional[int] = None
+    pace: Optional[Literal["slow", "good", "fast"]] = None
+    total_fillers: int = 0
+    top_fillers: Dict[str, int] = Field(default_factory=dict, description="Most frequent filler words.")
+
+
 class SessionReportItem(BaseModel):
     """One answered question in the report."""
 
@@ -325,6 +350,7 @@ class SessionReportItem(BaseModel):
     topic: Optional[str] = None
     model_answer: Optional[str] = None
     star: Optional[StarBreakdownRead] = Field(default=None, description="STAR coverage; behavioral questions only.")
+    delivery: Optional[DeliveryRead] = Field(default=None, description="Spoken answers only.")
 
 
 class SessionReport(BaseModel):
@@ -340,4 +366,5 @@ class SessionReport(BaseModel):
     strengths: List[str] = Field(default_factory=list)
     weak_topics: List[str] = Field(default_factory=list)
     summary: Optional[str] = None
+    delivery: Optional[DeliverySummary] = Field(default=None, description="Present when the session had spoken answers.")
     items: List[SessionReportItem] = Field(default_factory=list)

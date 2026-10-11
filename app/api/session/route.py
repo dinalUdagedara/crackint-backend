@@ -320,7 +320,9 @@ async def post_chat_turn(
     db: AsyncSession = Depends(get_db),
 ):
     ctx = await service.load_context(db, prep_session.id)
-    new_messages, status_message = await service.chat_turn(db, ctx, body.content, body.prefer_difficulty)
+    new_messages, status_message = await service.chat_turn(
+        db, ctx, body.content, body.prefer_difficulty, body.speaking_seconds
+    )
     return CommonResponse(
         success=True,
         message=status_message,
@@ -353,7 +355,9 @@ async def post_chat_turn_stream(
         async with SessionLocal() as db:
             try:
                 ctx = await service.load_context(db, session_id)
-                async for event, data in service.chat_turn_stream(db, ctx, body.content, body.prefer_difficulty):
+                async for event, data in service.chat_turn_stream(
+                    db, ctx, body.content, body.prefer_difficulty, body.speaking_seconds
+                ):
                     yield _sse(event, data)
             except HTTPException as e:
                 yield _sse("error", {"status": e.status_code, "detail": e.detail})
