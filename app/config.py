@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 2
     # Persist one row per LLM call (model, tokens, cost, latency) to llm_usage
     LLM_USAGE_TRACKING_ENABLED: bool = True
+    # Deterministic canned LLM replies (end-to-end tests / demos without an OpenAI key).
+    # Refused when ENVIRONMENT=production.
+    LLM_FAKE_RESPONSES: bool = False
     # Per-user limit on LLM-backed endpoints (requests per minute, per process). 0 disables.
     LLM_RATE_LIMIT_PER_MINUTE: int = 30
 
@@ -131,6 +134,8 @@ class Settings(BaseSettings):
                 f"JWT_SECRET must be set to a unique value of at least {MIN_JWT_SECRET_LENGTH} "
                 "characters when ENVIRONMENT=production."
             )
+        if self.LLM_FAKE_RESPONSES:
+            raise ValueError("LLM_FAKE_RESPONSES must not be enabled when ENVIRONMENT=production.")
         if "*" in self.cors_origins_list or not self.cors_origins_list:
             raise ValueError(
                 "CORS_ORIGINS must list explicit origins (not '*') when ENVIRONMENT=production."
@@ -147,9 +152,10 @@ class Settings(BaseSettings):
 
     @property
     def DB_SYNC_URL(self) -> str:
-        """Sync PostgreSQL URL for Alembic migrations."""
+        """Sync PostgreSQL URL for Alembic migrations (explicit psycopg2 driver: SQLAlchemy 2.1
+        changed the default for postgresql:// to psycopg 3, which is not a dependency)."""
         return (
-            f"postgresql://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
+            f"postgresql+psycopg2://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
             f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
         )
 

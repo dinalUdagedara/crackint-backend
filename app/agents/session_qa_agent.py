@@ -359,7 +359,6 @@ User message:
         raise ValueError("OpenAI client unavailable.") from e
 
     model = getattr(settings, "SESSION_QA_AGENT_MODEL", "gpt-4o-mini")
-    temperature = getattr(settings, "SESSION_QA_AGENT_TEMPERATURE", 0.7)
 
     try:
         response = await chat_completion(

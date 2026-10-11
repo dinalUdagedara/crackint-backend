@@ -5,7 +5,7 @@ Cover letter API endpoints.
 import uuid as uuid_pkg
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cover_letter.schemas import (

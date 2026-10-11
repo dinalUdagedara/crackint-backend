@@ -1,7 +1,6 @@
 import asyncio
 import logging
 
-import boto3
 from amazon_transcribe.client import TranscribeStreamingClient
 from amazon_transcribe.handlers import TranscriptResultStreamHandler
 from amazon_transcribe.model import TranscriptEvent

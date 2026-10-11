@@ -17,11 +17,23 @@ TEST_DATABASE_NAME = os.environ.get("TEST_DATABASE_NAME", "crackint_test")
 if not TEST_DATABASE_NAME.endswith("_test"):
     raise RuntimeError("TEST_DATABASE_NAME must end with '_test' so tests never touch a real database.")
 os.environ["DATABASE_NAME"] = TEST_DATABASE_NAME
-# Never load NER models or call external services from tests.
+# Never load NER models or call external services from tests, whatever the local .env says.
 os.environ["RESUME_NER_LOAD_DIR"] = ""
 os.environ["JOB_POSTER_NER_LOAD_DIR"] = ""
-os.environ["SESSION_QA_AGENT_ENABLED"] = "false"
 os.environ["OPENAI_API_KEY"] = ""
+for flag in (
+    "SESSION_QA_AGENT_ENABLED",
+    "CV_SCORING_ENABLED",
+    "RESUME_JOB_FIT_LLM_ENABLED",
+    "RESUME_ENTITY_AGENT_ENABLED",
+    "JOB_ENTITY_AGENT_ENABLED",
+    "COVER_LETTER_AGENT_ENABLED",
+):
+    os.environ[flag] = "false"
+os.environ["S3_UPLOADS_BUCKET"] = ""
+os.environ["AWS_ACCESS_KEY_ID"] = ""
+os.environ["AWS_SECRET_ACCESS_KEY"] = ""
+os.environ["LLM_RATE_LIMIT_PER_MINUTE"] = "0"
 
 import importlib  # noqa: E402
 import uuid  # noqa: E402

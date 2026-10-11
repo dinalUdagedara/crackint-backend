@@ -273,3 +273,41 @@ async def test_admin_llm_usage_summary(client, auth_headers, fake_openai):
     by_agent = {b["agent"]: b for b in p["breakdown"]}
     assert by_agent["a.one"]["calls"] == 2
     assert p["breakdown"][0]["agent"] == "a.two"  # most expensive first
+
+
+# --- Fake LLM mode (end-to-end tests / demos) ------------------------------------
+
+
+async def test_fake_llm_mode_runs_real_agents_without_openai(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(settings, "LLM_FAKE_RESPONSES", True)
+    monkeypatch.setattr(settings, "SESSION_QA_AGENT_ENABLED", True)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "fake-key")
+    r = await client.post(f"{API}/sessions", json={"mode": "QUICK_PRACTICE"}, headers=auth_headers)
+    sid = r.json()["payload"]["id"]
+    r = await client.post(f"{API}/sessions/{sid}/chat/stream", json={"content": "start"}, headers=auth_headers)
+    assert "Practice question 1" in r.text
+    r = await client.post(f"{API}/sessions/{sid}/chat", json={"content": "hi"}, headers=auth_headers)
+    assert r.json()["payload"]["new_messages"][-1]["meta"] == {"redirect": "true"}
+    r = await client.post(f"{API}/sessions/{sid}/chat", json={"content": "I would version the API."}, headers=auth_headers)
+    feedback, question = r.json()["payload"]["new_messages"][1:]
+    assert (feedback["meta"]["score"], feedback["meta"]["topic"]) == ("72", "api design")
+    assert question["content"].startswith("Practice question 2")
+    report = (await client.post(f"{API}/sessions/{sid}/complete", headers=auth_headers)).json()["payload"]
+    assert report["generated_by"] == "llm" and report["weak_topics"] == ["api design"]
+    assert (await client.post(f"{API}/tts", json={"text": "hi"}, headers=auth_headers)).status_code == 503
+    assert await usage_rows() == []  # nothing recorded: no real calls
+
+
+def test_fake_llm_mode_refused_in_production():
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    with pytest.raises(ValidationError, match="LLM_FAKE_RESPONSES"):
+        Settings(
+            _env_file=None,
+            ENVIRONMENT="production",
+            JWT_SECRET="x" * 40,
+            CORS_ORIGINS="https://app.example.com",
+            LLM_FAKE_RESPONSES=True,
+        )

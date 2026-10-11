@@ -1,7 +1,7 @@
 """Schemas for match/skill-gap API."""
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import List
 
 from pydantic import BaseModel, Field
 
