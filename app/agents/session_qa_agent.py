@@ -99,6 +99,7 @@ def _question_user_content(
     question_type: Optional[str],
     question_index: int,
     suggested_difficulty: Optional[str],
+    focus_topics: Optional[List[str]] = None,
 ) -> str:
     job_json = json.dumps(job_entities, ensure_ascii=False, indent=2)
     resume_json = json.dumps(resume_entities, ensure_ascii=False, indent=2)
@@ -114,8 +115,15 @@ def _question_user_content(
     if suggested_difficulty:
         difficulty_line = f"\nThis is question number {question_index + 1} in this session. Prefer difficulty: {suggested_difficulty}. The session should progress from easier to harder.\n"
 
+    focus_line = ""
+    if focus_topics:
+        focus_line = (
+            "\nFocus topics (the candidate struggled with these before; prefer a question on one of them "
+            f"that has not been asked yet in this session): {', '.join(focus_topics)}\n"
+        )
+
     return f"""Role level: {role_level}
-{difficulty_line}
+{difficulty_line}{focus_line}
 Job posting entities (key: list of values):
 {job_json}
 
@@ -179,6 +187,7 @@ async def generate_next_question(
     question_type: Optional[str] = None,
     question_index: int = 0,
     suggested_difficulty: Optional[str] = None,
+    focus_topics: Optional[List[str]] = None,
 ) -> QuestionGenerationResult:
     """
     Call LLM to generate the next interview question.
@@ -194,7 +203,7 @@ async def generate_next_question(
 
     user_content = _question_user_content(
         role_level, job_entities, resume_entities, previous_messages,
-        question_type, question_index, suggested_difficulty,
+        question_type, question_index, suggested_difficulty, focus_topics,
     )
 
     def _fallback_result() -> QuestionGenerationResult:
@@ -230,6 +239,7 @@ async def generate_next_question_stream(
     question_type: Optional[str] = None,
     question_index: int = 0,
     suggested_difficulty: Optional[str] = None,
+    focus_topics: Optional[List[str]] = None,
 ) -> AsyncIterator[Union[str, QuestionGenerationResult]]:
     """Streaming generate_next_question: yields question-text deltas (str), then the final result.
 
@@ -242,7 +252,7 @@ async def generate_next_question_stream(
         )
     user_content = _question_user_content(
         role_level, job_entities, resume_entities, previous_messages,
-        question_type, question_index, suggested_difficulty,
+        question_type, question_index, suggested_difficulty, focus_topics,
     )
     try:
         get_client()

@@ -30,6 +30,7 @@ from app.api.session.schemas import (
     PrepSessionWithMessages,
     SendReplyPayload,
     SendReplyRequest,
+    SessionReport,
 )
 from app.common.http_response_model import CommonResponse, PageMeta
 from app.database import SessionLocal
@@ -88,6 +89,7 @@ async def create_prep_session(
         resume_id=body.resume_id,
         job_posting_id=body.job_posting_id,
         role_level=body.role_level.value if body.role_level else None,
+        focus_topics=body.focus_topics,
     )
     return CommonResponse(
         success=True,
@@ -428,3 +430,39 @@ async def post_evaluate_answer(
         "evaluated": "Answer evaluated and feedback stored.",
     }[outcome.kind]
     return CommonResponse(success=True, message=status_message, payload=payload)
+
+
+# --- End-of-session report ---
+
+
+@router.post(
+    "/{session_id}/complete",
+    dependencies=[Depends(llm_rate_limit)],
+    response_model=CommonResponse[SessionReport],
+    name="Complete session",
+    summary="Mark the session COMPLETED and generate its report (model answers, STAR, strengths, weak topics).",
+)
+async def complete_prep_session(
+    prep_session: PrepSession = Depends(get_own_prep_session),
+    regenerate: bool = Query(default=False, description="Rebuild the report even if one exists."),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx = await service.load_context(db, prep_session.id)
+    report = await service.complete_session(db, ctx, regenerate=regenerate)
+    return CommonResponse(success=True, message="Session completed and report stored.", payload=report)
+
+
+@router.get(
+    "/{session_id}/report",
+    response_model=CommonResponse[SessionReport],
+    name="Get session report",
+    summary="The stored end-of-session report (404 until the session is completed).",
+)
+async def get_session_report(prep_session: PrepSession = Depends(get_own_prep_session)):
+    if not prep_session.report:
+        raise HTTPException(status_code=404, detail="This session has no report yet. Complete it first.")
+    return CommonResponse(
+        success=True,
+        message="Session report retrieved successfully",
+        payload=SessionReport.model_validate(prep_session.report),
+    )

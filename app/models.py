@@ -190,6 +190,16 @@ class PrepSession(UUIDModel, TimestampModel, table=True):
         ),
         description="Summary data such as strengths and areas_for_improvement.",
     )
+    focus_topics: List[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+        description="Topics to prioritize when generating questions (e.g. weak topics from a previous report).",
+    )
+    report: Dict = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+        description="End-of-session report (see SessionReport); empty until the session is completed.",
+    )
 
 
 class Message(UUIDModel, TimestampModel, table=True):
