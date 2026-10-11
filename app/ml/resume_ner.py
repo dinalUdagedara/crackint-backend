@@ -3,7 +3,6 @@ Resume NER: load BERT-BiLSTM-CRF or Word2Vec-BiLSTM-CRF from RESUME_NER_LOAD_DIR
 """
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple

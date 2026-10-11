@@ -63,7 +63,6 @@ def upload_image_to_s3(
     region = _get_region()
 
     import boto3
-    from botocore.exceptions import ClientError
 
     client = boto3.client(
         "s3",

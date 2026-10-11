@@ -3,7 +3,6 @@ CV scoring orchestration: file handling and agent delegation.
 """
 
 import logging
-from typing import List
 
 from app.agents.cv_scoring_agent import (
     CVScoreResult,

@@ -46,7 +46,7 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
    ```bash
    python -m venv .venv
    source .venv/bin/activate   # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
+   pip install -r requirements.txt   # add -r requirements-dev.txt for tests
    ```
 
 2. Copy env template and set options (optional):
@@ -71,6 +71,21 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
    ```
 
 4. Open docs: [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
+
+## Running tests
+
+Tests use a separate PostgreSQL database (`crackint_test`; the name must end in `_test`) and never call
+OpenAI, AWS or load the NER models, whatever your `.env` says.
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt   # or: poetry install
+createdb crackint_test
+DATABASE_NAME=crackint_test alembic upgrade head
+pytest                      # all tests
+ruff check --select F app tests
+```
+
+CI (`.github/workflows/ci.yml`) runs the same steps against a Postgres service on every pull request.
 
 ## Production configuration
 
