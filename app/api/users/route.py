@@ -12,6 +12,7 @@ from app.api.users.schemas import (
     HomeSummaryCard,
     HomeSummaryItem,
     HomeSummaryPayload,
+    OnboardingStep,
     ReadinessSummaryResponse,
     ReadinessTrendItem,
     TopicMasteryItem,
@@ -21,6 +22,8 @@ from app.models import User
 from app.api.users.service import (
     get_cv_and_gap,
     get_jump_back_in_items,
+    get_onboarding_steps,
+    get_practice_next_items,
     get_readiness_trend_data,
     get_readiness_tracker_items,
     get_recent_session_stats,
@@ -199,19 +202,21 @@ async def get_my_readiness_summary(
     "/me/home-summary",
     response_model=CommonResponse[HomeSummaryPayload],
     name="Get home summary",
-    summary="Get summary cards for the home/dashboard view (Jump Back In, Refine CV, Readiness Tracker).",
+    summary="Home dashboard cards (Jump Back In, Practice Next, Refine CV, Readiness Tracker) and onboarding steps.",
 )
 async def get_my_home_summary(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns three cards with actionable items for the Summary view:
-    - Jump Back In: recent sessions with session_id and href
+    Returns cards with actionable items for the Summary view, plus onboarding steps:
+    - Jump Back In: unfinished sessions first; completed ones link to their report
+    - Practice Next: weak / learning topics (spaced retry) that start a focused session
     - Refine CV: skill-gap suggestions with resume_id / job_posting_id
     - Readiness Tracker: readiness insights with session_id / job_posting_id and a Start practice CTA
     """
     jump_items = await get_jump_back_in_items(db=db, current_user=current_user, limit=5)
+    practice_items = await get_practice_next_items(db=db, current_user=current_user, limit=4)
     refine_items = await get_refine_cv_items(db=db, current_user=current_user, max_items=5)
     readiness_items = await get_readiness_tracker_items(db=db, current_user=current_user, limit=5)
 
@@ -221,6 +226,12 @@ async def get_my_home_summary(
             title="Jump Back In",
             icon="messages",
             items=[HomeSummaryItem(**it) for it in jump_items],
+        ),
+        HomeSummaryCard(
+            id="practice_next",
+            title="Practice Next",
+            icon="target",
+            items=[HomeSummaryItem(**it) for it in practice_items],
         ),
         HomeSummaryCard(
             id="refine_cv",
@@ -235,7 +246,8 @@ async def get_my_home_summary(
             items=[HomeSummaryItem(**it) for it in readiness_items],
         ),
     ]
-    payload = HomeSummaryPayload(cards=cards)
+    onboarding = [OnboardingStep(**step) for step in await get_onboarding_steps(db, current_user)]
+    payload = HomeSummaryPayload(cards=cards, onboarding=onboarding)
     return CommonResponse(
         success=True,
         message="Home summary retrieved successfully",
