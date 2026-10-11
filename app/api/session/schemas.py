@@ -37,6 +37,11 @@ class PrepSessionCreate(BaseModel):
         default=None,
         description="Seniority to target. If omitted, inferred from the job posting (falls back to ASE).",
     )
+    focus_topics: List[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Topics to prioritize in this session (e.g. weak topics from a previous report).",
+    )
 
 
 class PrepSessionSummary(BaseModel):
@@ -86,6 +91,7 @@ class PrepSessionRead(BaseModel):
     mode: SessionMode
     status: SessionStatus
     role_level: Optional[RoleLevel] = None
+    focus_topics: List[str] = Field(default_factory=list)
     readiness_score: Optional[float] = None
     summary: Dict[str, Optional[str]]
     created_at: datetime
@@ -291,3 +297,47 @@ class ChatTurnPayload(BaseModel):
     )
 
 
+
+
+# --- End-of-session report ---
+
+
+class StarBreakdownRead(BaseModel):
+    situation: bool = False
+    task: bool = False
+    action: bool = False
+    result: bool = False
+    note: Optional[str] = None
+
+
+class SessionReportItem(BaseModel):
+    """One answered question in the report."""
+
+    index: int = Field(..., description="1-based position among answered questions.")
+    question_message_id: uuid_pkg.UUID
+    question: str
+    answer: str
+    feedback: str
+    score: Optional[int] = None
+    difficulty: Optional[str] = None
+    question_type: Optional[str] = None
+    dimension_tags: List[str] = Field(default_factory=list)
+    topic: Optional[str] = None
+    model_answer: Optional[str] = None
+    star: Optional[StarBreakdownRead] = Field(default=None, description="STAR coverage; behavioral questions only.")
+
+
+class SessionReport(BaseModel):
+    """Stored end-of-session report."""
+
+    generated_at: datetime
+    generated_by: Literal["llm", "basic"] = Field(
+        ..., description="'basic' when the LLM was unavailable (no model answers / STAR)."
+    )
+    average_score: Optional[float] = None
+    questions_answered: int = 0
+    questions_skipped: int = 0
+    strengths: List[str] = Field(default_factory=list)
+    weak_topics: List[str] = Field(default_factory=list)
+    summary: Optional[str] = None
+    items: List[SessionReportItem] = Field(default_factory=list)

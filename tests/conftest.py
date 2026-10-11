@@ -134,6 +134,25 @@ class FakeAgents:
         self._record("generate_tutor_chat_reply", **kwargs)
         return "Tutor reply."
 
+    async def generate_session_report(self, **kwargs):
+        from app.agents.session_report_agent import ReportItemInsight, SessionReportInsights, StarBreakdown
+
+        self._record("generate_session_report", **kwargs)
+        return SessionReportInsights(
+            items=[
+                ReportItemInsight(
+                    index=a["index"],
+                    topic=f"Topic {a['index']}",
+                    model_answer=f"Model answer {a['index']}",
+                    star=StarBreakdown(situation=True, task=True, action=True, result=False, note="No result"),
+                )
+                for a in kwargs["answered"]
+            ],
+            strengths=["Clear structure"],
+            weak_topics=["SQL indexing", "Trade-offs"],
+            summary="You did well.",
+        )
+
     # Streaming variants: same results, text split into small deltas.
 
     async def generate_next_question_stream(self, **kwargs):

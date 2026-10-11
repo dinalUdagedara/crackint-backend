@@ -9,6 +9,7 @@ HTTP 503 so routes stay thin.
 import asyncio
 import uuid as uuid_pkg
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
@@ -29,8 +30,10 @@ from app.agents.session_qa_agent import (
     generate_tutor_chat_reply_stream,
     summarize_session_feedback,
 )
+from app.agents.session_report_agent import generate_session_report
+from app.api.session.schemas import SessionReport, SessionReportItem, StarBreakdownRead
 from app.models import JobPosting, Message, PrepSession, Resume
-from app.schemas.common import RoleLevel, SenderType, SessionMode
+from app.schemas.common import RoleLevel, SenderType, SessionMode, SessionStatus
 from app.services.difficulty import choose_difficulty, choose_question_type, infer_role_level
 from app.services.llm import current_session_id as llm_current_session_id
 
@@ -193,6 +196,7 @@ async def create_session(
     resume_id: Optional[uuid_pkg.UUID] = None,
     job_posting_id: Optional[uuid_pkg.UUID] = None,
     role_level: Optional[str] = None,
+    focus_topics: Optional[List[str]] = None,
 ) -> PrepSession:
     """Create an ACTIVE session. Without an explicit role_level, infer it from the job posting."""
     if role_level is None and job_posting_id is not None:
@@ -206,6 +210,7 @@ async def create_session(
         mode=mode,
         status="ACTIVE",
         role_level=role_level,
+        focus_topics=[t.strip() for t in (focus_topics or []) if t and t.strip()],
     )
     db.add(record)
     await db.commit()
@@ -302,6 +307,7 @@ def _plan_question(
             question_type=question_type or choose_question_type(perf.question_types),
             question_index=question_index,
             suggested_difficulty=difficulty,
+            focus_topics=list(ctx.session.focus_topics or []) or None,
         ),
         difficulty=difficulty,
         difficulty_reason=difficulty_reason,
@@ -650,3 +656,147 @@ async def chat_turn_stream(
         yield ("done", {"status": status})
     except _StreamError as e:
         yield ("error", {"status": e.status, "detail": e.detail})
+
+
+# --- End-of-session report ----------------------------------------------------------
+
+
+@dataclass
+class _AnsweredQuestion:
+    question: Message
+    answer: Message
+    feedback: Message
+
+
+def collect_answered(messages: Sequence[Message]) -> Tuple[List[_AnsweredQuestion], int]:
+    """Pair each QUESTION with the answer that got a scored FEEDBACK. Also count skipped questions.
+
+    Redirect replies (greetings / off-topic) do not count as answers; a question followed by
+    another question without a scored answer was skipped.
+    """
+    answered: List[_AnsweredQuestion] = []
+    skipped = 0
+    question: Optional[Message] = None
+    answer: Optional[Message] = None
+    for m in messages:
+        meta = m.meta or {}
+        if m.type == "QUESTION":
+            if question is not None:
+                skipped += 1
+            question, answer = m, None
+        elif m.type == "ANSWER" and m.sender == SenderType.USER.value:
+            answer = m
+        elif m.type == "FEEDBACK":
+            if meta.get("redirect") == "true":
+                answer = None
+            elif question is not None and answer is not None and meta.get("score") is not None:
+                answered.append(_AnsweredQuestion(question, answer, m))
+                question, answer = None, None
+    return answered, skipped
+
+
+def _score(m: Message) -> Optional[int]:
+    try:
+        return int(float((m.meta or {}).get("score")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _tags(m: Message) -> List[str]:
+    raw = (m.meta or {}).get("dimension_tags") or ""
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def _basic_strengths_and_weak_topics(items: List[SessionReportItem]) -> Tuple[List[str], List[str]]:
+    """Without the LLM: dimension tags with high / low average scores."""
+    by_tag: Dict[str, List[int]] = {}
+    for item in items:
+        for tag in item.dimension_tags:
+            if item.score is not None:
+                by_tag.setdefault(tag, []).append(item.score)
+    averages = [(sum(v) / len(v), tag) for tag, v in by_tag.items()]
+    strengths = [tag for avg, tag in sorted(averages, key=lambda x: (-x[0], x[1])) if avg >= 75][:3]
+    weak = [tag for avg, tag in sorted(averages) if avg < 60][:3]
+    return strengths, weak
+
+
+async def build_report(ctx: SessionContext) -> SessionReport:
+    """Report from stored messages, enriched by the report agent (model answers, STAR, topics)
+    when available; a basic report otherwise."""
+    answered, skipped = collect_answered(ctx.messages)
+    items = [
+        SessionReportItem(
+            index=i,
+            question_message_id=a.question.id,
+            question=a.question.content,
+            answer=a.answer.content,
+            feedback=a.feedback.content,
+            score=_score(a.feedback),
+            difficulty=(a.question.meta or {}).get("difficulty"),
+            question_type=(a.question.meta or {}).get("question_type"),
+            dimension_tags=_tags(a.feedback),
+        )
+        for i, a in enumerate(answered, 1)
+    ]
+    scores = [i.score for i in items if i.score is not None]
+    report = SessionReport(
+        generated_at=datetime.now(timezone.utc),
+        generated_by="basic",
+        average_score=round(sum(scores) / len(scores), 1) if scores else None,
+        questions_answered=len(items),
+        questions_skipped=skipped,
+        items=items,
+    )
+    report.strengths, report.weak_topics = _basic_strengths_and_weak_topics(items)
+    if not items:
+        return report
+
+    try:
+        insights = await generate_session_report(
+            role_level=ctx.role_level,
+            job_entities=ctx.job_entities,
+            answered=[
+                {
+                    "index": it.index,
+                    "question": it.question,
+                    "question_type": it.question_type,
+                    "answer": it.answer,
+                    "score": it.score,
+                    "feedback": it.feedback,
+                }
+                for it in items
+            ],
+        )
+    except ValueError:
+        return report
+
+    by_index = {ins.index: ins for ins in insights.items}
+    for item in items:
+        ins = by_index.get(item.index)
+        if ins is None:
+            continue
+        item.topic = ins.topic
+        item.model_answer = ins.model_answer
+        if ins.star is not None and item.question_type == "behavioral":
+            item.star = StarBreakdownRead(**ins.star.model_dump())
+    report.generated_by = "llm"
+    report.strengths = insights.strengths or report.strengths
+    report.weak_topics = insights.weak_topics or report.weak_topics
+    report.summary = insights.summary
+    return report
+
+
+async def complete_session(db: AsyncSession, ctx: SessionContext, regenerate: bool = False) -> SessionReport:
+    """Mark the session COMPLETED and store its report (reuses an existing one unless regenerate)."""
+    session_obj = ctx.session
+    if session_obj.report and not regenerate:
+        return SessionReport.model_validate(session_obj.report)
+    report = await build_report(ctx)
+    session_obj.report = report.model_dump(mode="json")
+    session_obj.status = SessionStatus.COMPLETED.value
+    if report.average_score is not None:
+        session_obj.readiness_score = report.average_score
+    db.add(session_obj)
+    await db.commit()
+    await db.refresh(session_obj)
+    return report
