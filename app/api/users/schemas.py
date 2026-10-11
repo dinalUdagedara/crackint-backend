@@ -21,8 +21,9 @@ class HomeSummaryItem(BaseModel):
     job_posting_id: Optional[str] = Field(default=None, description="Job posting ID for frontend routing.")
     action_type: Optional[str] = Field(
         default=None,
-        description="Optional action hint, e.g. start_session, open_cv, open_job.",
+        description="Optional action hint, e.g. start_session, start_focus_session, open_cv, open_job.",
     )
+    topic: Optional[str] = Field(default=None, description="Topic for start_focus_session items.")
 
 
 class HomeSummaryCard(BaseModel):
@@ -30,7 +31,7 @@ class HomeSummaryCard(BaseModel):
 
     id: str = Field(..., description="Card identifier, e.g. jump_back_in.")
     title: str = Field(..., description="Card display title.")
-    icon: Literal["messages", "sparkles", "shield"] = Field(
+    icon: Literal["messages", "sparkles", "shield", "target"] = Field(
         ...,
         description="Icon name for the card.",
     )
@@ -40,13 +41,23 @@ class HomeSummaryCard(BaseModel):
     )
 
 
+class OnboardingStep(BaseModel):
+    """One getting-started step; the home page shows the checklist until all are done."""
+
+    id: Literal["upload_cv", "add_job", "first_session", "first_report"]
+    title: str
+    done: bool
+    href: str
+
+
 class HomeSummaryPayload(BaseModel):
-    """Payload for GET /users/me/home-summary: three cards in fixed order."""
+    """Payload for GET /users/me/home-summary: cards in fixed order plus onboarding steps."""
 
     cards: List[HomeSummaryCard] = Field(
         ...,
-        description="Exactly three cards: Jump Back In, Refine CV, Readiness Tracker.",
+        description="Cards in order: Jump Back In, Practice Next, Refine CV, Readiness Tracker.",
     )
+    onboarding: List[OnboardingStep] = Field(default_factory=list)
 
 
 class ReadinessSummaryResponse(BaseModel):
