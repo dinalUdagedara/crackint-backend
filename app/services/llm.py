@@ -11,6 +11,7 @@ import logging
 import time
 import uuid as uuid_pkg
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from app.config import settings
@@ -45,9 +46,14 @@ class LLMUnavailableError(RuntimeError):
     """No API key configured or the OpenAI SDK could not be loaded."""
 
 
+_FAKE_CLIENT = object()  # stands in for the client when LLM_FAKE_RESPONSES is on
+
+
 def get_client():
     """Process-wide AsyncOpenAI client (re-created if the API key changes)."""
     global _client, _client_key
+    if settings.LLM_FAKE_RESPONSES:
+        return _FAKE_CLIENT
     api_key = settings.OPENAI_API_KEY
     if not api_key:
         raise LLMUnavailableError("OPENAI_API_KEY is not set.")
@@ -142,6 +148,12 @@ async def chat_completion(*, agent: str, model: str, messages: List[Dict[str, An
     agent: short name of the caller (e.g. "session_qa.evaluate") used for cost breakdowns.
     Extra kwargs (temperature, response_format, ...) are passed through.
     """
+    if settings.LLM_FAKE_RESPONSES:
+        from app.services.fake_llm import fake_reply
+
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=fake_reply(agent, messages)))], usage=None
+        )
     client = get_client()
     start = time.monotonic()
     user_id, session_id = current_user_id.get(), current_session_id.get()
@@ -184,6 +196,12 @@ async def chat_completion_stream(
     *, agent: str, model: str, messages: List[Dict[str, Any]], **kwargs: Any
 ) -> AsyncIterator[str]:
     """Stream text deltas from chat.completions; records usage when the stream ends."""
+    if settings.LLM_FAKE_RESPONSES:
+        from app.services.fake_llm import chunks, fake_reply
+
+        for part in chunks(fake_reply(agent, messages)):
+            yield part
+        return
     client = get_client()
     start = time.monotonic()
     user_id, session_id = current_user_id.get(), current_session_id.get()
@@ -229,6 +247,8 @@ async def chat_completion_stream(
 
 async def synthesize_speech(*, text: str, model: str, voice: str) -> bytes:
     """Text-to-speech (mp3). Usage is recorded with prompt_tokens = characters (agent "tts")."""
+    if settings.LLM_FAKE_RESPONSES:
+        raise LLMUnavailableError("Text-to-speech is not available in fake LLM mode.")
     client = get_client()
     start = time.monotonic()
     user_id, session_id = current_user_id.get(), current_session_id.get()
