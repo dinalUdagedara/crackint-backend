@@ -147,9 +147,10 @@ class Settings(BaseSettings):
 
     @property
     def DB_SYNC_URL(self) -> str:
-        """Sync PostgreSQL URL for Alembic migrations."""
+        """Sync PostgreSQL URL for Alembic migrations (explicit psycopg2 driver: SQLAlchemy 2.1
+        changed the default for postgresql:// to psycopg 3, which is not a dependency)."""
         return (
-            f"postgresql://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
+            f"postgresql+psycopg2://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
             f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
         )
 
