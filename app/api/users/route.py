@@ -14,6 +14,7 @@ from app.api.users.schemas import (
     HomeSummaryPayload,
     ReadinessSummaryResponse,
     ReadinessTrendItem,
+    TopicMasteryItem,
 )
 from app.common.http_response_model import CommonResponse
 from app.models import User
@@ -26,6 +27,7 @@ from app.api.users.service import (
     get_refine_cv_items,
 )
 from app.services.readiness_aggregator import compute_combined_readiness
+from app.services.topic_mastery import MASTERED_BOX, list_mastery, status_of, utcnow
 
 router = APIRouter()
 
@@ -239,3 +241,31 @@ async def get_my_home_summary(
         message="Home summary retrieved successfully",
         payload=payload,
     )
+
+
+@router.get(
+    "/me/topic-mastery",
+    response_model=CommonResponse[List[TopicMasteryItem]],
+    name="Get topic mastery",
+    summary="Topics practiced so far with spaced-repetition status (weak / learning / mastered), weakest first.",
+)
+async def get_my_topic_mastery(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    now = utcnow()
+    rows = await list_mastery(db, current_user.id)
+    items = [
+        TopicMasteryItem(
+            topic=r.topic,
+            status=status_of(r),
+            attempts=r.attempts,
+            last_score=r.last_score,
+            avg_score=r.avg_score,
+            last_seen_at=r.last_seen_at,
+            next_due_at=r.next_due_at,
+            due=r.box < MASTERED_BOX and r.next_due_at is not None and r.next_due_at <= now,
+        )
+        for r in rows
+    ]
+    return CommonResponse(success=True, message="Topic mastery retrieved successfully", payload=items)

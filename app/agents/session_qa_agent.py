@@ -396,7 +396,7 @@ Your task: Given the question and the candidate's answer, produce:
 
 Role level (INTERN / ASE / SSE) is provided; calibrate expectations accordingly (e.g. INTERN: more lenient on depth; SSE: expect more leadership/system thinking).
 
-Respond with a single JSON object with keys: "feedback" (string), "score" (integer 0–100), "dimension_tags" (array of strings). Do not include any text outside the JSON object."""
+Respond with a single JSON object with keys: "feedback" (string), "score" (integer 0–100), "dimension_tags" (array of strings), "topic" (string: the 2-4 word skill or subject the question tested, e.g. "SQL indexing", "conflict resolution"). Do not include any text outside the JSON object."""
 
 
 class AnswerEvaluationResult(BaseModel):
@@ -407,6 +407,10 @@ class AnswerEvaluationResult(BaseModel):
     dimension_tags: List[str] = Field(
         default_factory=list,
         description="Tags such as technical, communication, structure.",
+    )
+    topic: Optional[str] = Field(
+        default=None,
+        description="Skill/subject the question tested; None for placeholder results.",
     )
 
 
@@ -483,11 +487,13 @@ def _parse_eval(content: Optional[str]) -> AnswerEvaluationResult:
     if not isinstance(tags, list):
         tags = []
     dimension_tags = [str(t).strip() for t in tags if t]
+    topic = parsed.get("topic")
 
     return AnswerEvaluationResult(
         feedback=feedback,
         score=score,
         dimension_tags=dimension_tags,
+        topic=str(topic).strip() or None if topic else None,
     )
 
 
