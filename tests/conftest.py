@@ -94,6 +94,7 @@ class FakeAgents:
     def __init__(self) -> None:
         self.calls: Dict[str, List[Dict[str, Any]]] = {}
         self.eval_score = 70
+        self.eval_topic = None  # set to exercise spaced retry (topic mastery)
         self.fail: set[str] = set()
 
     def _record(self, name: str, **kwargs) -> None:
@@ -120,7 +121,9 @@ class FakeAgents:
 
     async def evaluate_answer(self, **kwargs):
         self._record("evaluate_answer", **kwargs)
-        return AnswerEvaluationResult(feedback="Solid answer.", score=self.eval_score, dimension_tags=["clarity", "depth"])
+        return AnswerEvaluationResult(
+            feedback="Solid answer.", score=self.eval_score, dimension_tags=["clarity", "depth"], topic=self.eval_topic
+        )
 
     async def generate_session_title(self, **kwargs):
         self._record("generate_session_title", **kwargs)

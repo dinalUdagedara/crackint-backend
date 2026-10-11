@@ -36,9 +36,13 @@ from app.models import JobPosting, Message, PrepSession, Resume
 from app.schemas.common import RoleLevel, SenderType, SessionMode, SessionStatus
 from app.services.difficulty import choose_difficulty, choose_question_type, infer_role_level
 from app.services.llm import current_session_id as llm_current_session_id
+from app.services.topic_mastery import due_weak_topics, normalize_topic, record_attempt
 
 # Update session summary (LLM) only every N FEEDBACK messages to reduce cost.
 SUMMARY_UPDATE_EVERY_N = 10
+
+# Every Nth question revisits a due weak topic from earlier sessions (spaced retry), ~25%.
+RETRY_EVERY_N = 4
 
 
 def _agent_unavailable(e: ValueError) -> HTTPException:
@@ -83,6 +87,8 @@ class SessionContext:
     job_entities: Dict[str, List[str]] = field(default_factory=dict)
     messages: List[Message] = field(default_factory=list)
     role_level: str = RoleLevel.ASE.value
+    # Weak topics from earlier sessions that are due for review (not covered in this session).
+    due_topics: List[str] = field(default_factory=list)
 
     @property
     def last_question(self) -> Optional[str]:
@@ -176,11 +182,18 @@ async def load_context(
         if job and job.entities:
             job_entities = dict(job.entities)
 
+    messages = await list_messages(db, session_id)
+    covered = [
+        (m.meta or {}).get("topic") or (m.meta or {}).get("retry_topic")
+        for m in messages
+        if (m.meta or {}).get("topic") or (m.meta or {}).get("retry_topic")
+    ]
     return SessionContext(
         session=session_obj,
         resume_entities=resume_entities,
         job_entities=job_entities,
-        messages=await list_messages(db, session_id),
+        messages=messages,
+        due_topics=await due_weak_topics(db, session_obj.user_id, exclude=covered),
         # Request override > session setting > inferred from job posting > ASE.
         role_level=role_level
         or session_obj.role_level
@@ -283,6 +296,17 @@ class _QuestionPlan:
     agent_kwargs: Dict[str, Any]
     difficulty: str
     difficulty_reason: str
+    retry_topic: Optional[str] = None
+
+
+def _pick_retry_topic(ctx: SessionContext, question_index: int) -> Optional[str]:
+    """A due weak topic for every RETRY_EVERY_N-th question, unless the session has its own focus."""
+    if ctx.session.focus_topics or not ctx.due_topics:
+        return None
+    if question_index % RETRY_EVERY_N != RETRY_EVERY_N - 1:
+        return None
+    asked = {normalize_topic((m.meta or {}).get("retry_topic")) for m in ctx.messages if m.type == "QUESTION"}
+    return next((t for t in ctx.due_topics if t not in asked), None)
 
 
 def _plan_question(
@@ -298,6 +322,8 @@ def _plan_question(
     else:
         choice = choose_difficulty(question_index, perf.last_question_difficulty, perf.scores)
         difficulty, difficulty_reason = choice.difficulty, choice.reason
+    retry_topic = _pick_retry_topic(ctx, question_index)
+    focus_topics = [retry_topic] if retry_topic else list(ctx.session.focus_topics or [])
     return _QuestionPlan(
         agent_kwargs=dict(
             role_level=ctx.role_level,
@@ -307,10 +333,11 @@ def _plan_question(
             question_type=question_type or choose_question_type(perf.question_types),
             question_index=question_index,
             suggested_difficulty=difficulty,
-            focus_topics=list(ctx.session.focus_topics or []) or None,
+            focus_topics=focus_topics or None,
         ),
         difficulty=difficulty,
         difficulty_reason=difficulty_reason,
+        retry_topic=retry_topic,
     )
 
 
@@ -321,6 +348,8 @@ async def _save_question(
     meta["difficulty"] = result.difficulty or plan.difficulty
     if result.question_type:
         meta["question_type"] = result.question_type
+    if plan.retry_topic:
+        meta["retry_topic"] = plan.retry_topic
     return await save_message(db, ctx.session.id, SenderType.ASSISTANT, "QUESTION", result.question, meta)
 
 
@@ -360,7 +389,13 @@ async def _save_feedback(db: AsyncSession, ctx: SessionContext, result: AnswerEv
     meta: Dict[str, Any] = {"score": str(result.score)}
     if result.dimension_tags:
         meta["dimension_tags"] = ",".join(result.dimension_tags)
-    return await save_message(db, ctx.session.id, SenderType.ASSISTANT, "FEEDBACK", result.feedback, meta)
+    topic = normalize_topic(result.topic)
+    if topic:
+        meta["topic"] = topic
+    message = await save_message(db, ctx.session.id, SenderType.ASSISTANT, "FEEDBACK", result.feedback, meta)
+    # Spaced retry: only real evaluations carry a topic (the offline placeholder does not).
+    await record_attempt(db, ctx.session.user_id, topic, result.score)
+    return message
 
 
 async def update_session_after_feedback(db: AsyncSession, ctx: SessionContext, last_question: str) -> None:
@@ -735,6 +770,7 @@ async def build_report(ctx: SessionContext) -> SessionReport:
             difficulty=(a.question.meta or {}).get("difficulty"),
             question_type=(a.question.meta or {}).get("question_type"),
             dimension_tags=_tags(a.feedback),
+            topic=(a.feedback.meta or {}).get("topic"),
         )
         for i, a in enumerate(answered, 1)
     ]
@@ -775,7 +811,7 @@ async def build_report(ctx: SessionContext) -> SessionReport:
         ins = by_index.get(item.index)
         if ins is None:
             continue
-        item.topic = ins.topic
+        item.topic = ins.topic or item.topic
         item.model_answer = ins.model_answer
         if ins.star is not None and item.question_type == "behavioral":
             item.star = StarBreakdownRead(**ins.star.model_dump())

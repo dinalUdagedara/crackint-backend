@@ -1,9 +1,10 @@
 """Request/response schemas for users API (readiness dashboard, etc.)."""
 
 import uuid as uuid_pkg
+from datetime import datetime
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class HomeSummaryItem(BaseModel):
@@ -106,3 +107,18 @@ class ReadinessTrendItem(BaseModel):
         default=None,
         description="Optional human-friendly session title from summary, if present.",
     )
+
+
+class TopicMasteryItem(BaseModel):
+    """Spaced-repetition state of one topic for the current user."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    topic: str
+    status: Literal["weak", "learning", "mastered"]
+    attempts: int
+    last_score: Optional[float] = None
+    avg_score: Optional[float] = None
+    last_seen_at: Optional[datetime] = Field(default=None, description="UTC (naive).")
+    next_due_at: Optional[datetime] = Field(default=None, description="UTC (naive); when the topic is due for review.")
+    due: bool = Field(description="True when the topic is due for review and not mastered.")

@@ -329,3 +329,21 @@ class LLMUsage(UUIDModel, TimestampModel, table=True):
     cost_usd: Optional[float] = Field(default=None, nullable=True, description="Estimated cost; null if model price unknown.")
     latency_ms: int = Field(default=0, nullable=False)
     success: bool = Field(default=True, nullable=False)
+
+
+class TopicMastery(UUIDModel, TimestampModel, table=True):
+    """Per-user spaced-repetition state for an interview topic (see app.services.topic_mastery)."""
+
+    __tablename__ = "topic_mastery"
+    __table_args__ = (UniqueConstraint("user_id", "topic", name="uq_topic_mastery_user_topic"),)
+
+    user_id: uuid_pkg.UUID = Field(
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
+    )
+    topic: str = Field(nullable=False, description="Normalized topic name (lowercase).")
+    attempts: int = Field(default=0, nullable=False)
+    last_score: Optional[float] = Field(default=None, nullable=True)
+    avg_score: Optional[float] = Field(default=None, nullable=True, description="Exponential moving average of scores.")
+    box: int = Field(default=0, nullable=False, description="Leitner box: 0 = weak, higher = reviewed less often.")
+    last_seen_at: Optional[datetime] = Field(default=None, nullable=True)
+    next_due_at: Optional[datetime] = Field(default=None, nullable=True, index=True)
