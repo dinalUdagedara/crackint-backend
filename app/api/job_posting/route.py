@@ -17,10 +17,12 @@ from app.api.job_posting.schemas import (
     JobPostingNearDeadlineItem,
     JobPostingReorderRequest,
     JobPostingUpdate,
+    PrepPlan,
     ReorderResponse,
 )
 from app.common.http_response_model import CommonResponse, PageMeta
 from app.models import JobPosting, User
+from app.services.prep_plan import get_prep_plan
 
 router = APIRouter()
 
@@ -229,6 +231,24 @@ async def get_job_posting(
         message="Job posting retrieved successfully",
         payload=JobPostingListItem.model_validate(row),
     )
+
+
+@router.get(
+    "/{job_posting_id}/prep-plan",
+    response_model=CommonResponse[PrepPlan],
+    name="Get prep plan",
+    summary="Day-by-day prep plan until the interview or deadline, from skill gaps, weak topics and scores.",
+)
+async def get_job_posting_prep_plan(
+    job_posting_id: uuid_pkg.UUID = Path(..., description="Job posting ID."),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await session.get(JobPosting, job_posting_id)
+    if row is None or row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Job posting not found.")
+    plan = await get_prep_plan(session, current_user.id, row)
+    return CommonResponse(success=True, message="Prep plan generated", payload=PrepPlan(**plan))
 
 
 @router.post(
