@@ -2,8 +2,9 @@
 Job description upload and entity extraction endpoint.
 """
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
+from app.api.rate_limit import llm_rate_limit
 from app.common.http_response_model import CommonResponse
 from app.api.job.schemas import JobExtractResponse
 from app.api.job import service as job_service
@@ -18,6 +19,8 @@ MAX_BYTES = (settings.MAX_UPLOAD_SIZE_MB or 10) * 1024 * 1024
 
 @router.post(
     "/extract",
+    # Requires a logged-in user (also rate-limited): this endpoint stores uploads in S3 and may call the LLM.
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[JobExtractResponse],
     name="Extract entities from job description",
     summary="Extract entities from job description PDF or raw text (job poster NER; empty when model not loaded).",

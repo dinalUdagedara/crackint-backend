@@ -3,6 +3,9 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      # The app default is now http://localhost:3000; keep "*" unless .env sets CORS_ORIGINS.
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
     # DATABASE_HOST/PORT/NAME/USER/PASSWORD in .env point at a managed Neon Postgres
     # instance (free tier) — no local postgres container needed. SSL is auto-enabled
     # for any non-localhost DATABASE_HOST (see app/database.py).

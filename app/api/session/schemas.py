@@ -33,6 +33,15 @@ class PrepSessionCreate(BaseModel):
         default=SessionMode.TARGETED,
         description="Session mode, e.g. TARGETED or QUICK_PRACTICE.",
     )
+    role_level: Optional[RoleLevel] = Field(
+        default=None,
+        description="Seniority to target. If omitted, inferred from the job posting (falls back to ASE).",
+    )
+    focus_topics: List[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Topics to prioritize in this session (e.g. weak topics from a previous report).",
+    )
 
 
 class PrepSessionSummary(BaseModel):
@@ -64,6 +73,10 @@ class PrepSessionUpdate(BaseModel):
         default=None,
         description="New mode for the session.",
     )
+    role_level: Optional[RoleLevel] = Field(
+        default=None,
+        description="New seniority level for the questions.",
+    )
 
 
 class PrepSessionRead(BaseModel):
@@ -77,6 +90,8 @@ class PrepSessionRead(BaseModel):
     job_posting_id: Optional[uuid_pkg.UUID] = None
     mode: SessionMode
     status: SessionStatus
+    role_level: Optional[RoleLevel] = None
+    focus_topics: List[str] = Field(default_factory=list)
     readiness_score: Optional[float] = None
     summary: Dict[str, Optional[str]]
     created_at: datetime
@@ -143,12 +158,12 @@ class NextQuestionRequest(BaseModel):
         description="Requested type: technical, behavioral, or system_design.",
     )
     role_level: Optional[RoleLevel] = Field(
-        default=RoleLevel.ASE,
-        description="Candidate level for question difficulty (default: ASE).",
+        default=None,
+        description="Override the candidate level for this question. Default: the session's role level.",
     )
     prefer_difficulty: Optional[DifficultyLiteral] = Field(
         default=None,
-        description="Override difficulty for this question: easy, medium, or hard. If omitted, backend uses the session difficulty curve.",
+        description="Override difficulty for this question: easy, medium, or hard. If omitted, difficulty adapts to recent scores (position curve before the first score).",
     )
 
 
@@ -180,7 +195,7 @@ class EvaluateAnswerRequest(BaseModel):
     )
     prefer_difficulty: Optional[DifficultyLiteral] = Field(
         default=None,
-        description="When user skips and a next question is returned, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
+        description="When user skips and a next question is returned, prefer this difficulty (easy/medium/hard). If omitted, difficulty adapts to recent scores.",
     )
 
 
@@ -221,7 +236,7 @@ class SendReplyRequest(BaseModel):
     )
     prefer_difficulty: Optional[DifficultyLiteral] = Field(
         default=None,
-        description="When a next question is generated, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
+        description="When a next question is generated, prefer this difficulty (easy/medium/hard). If omitted, difficulty adapts to recent scores.",
     )
 
 
@@ -269,7 +284,13 @@ class ChatRequest(BaseModel):
     )
     prefer_difficulty: Optional[DifficultyLiteral] = Field(
         default=None,
-        description="When a next question is generated this turn, prefer this difficulty (easy/medium/hard). If omitted, backend uses the session curve.",
+        description="When a next question is generated this turn, prefer this difficulty (easy/medium/hard). If omitted, difficulty adapts to recent scores.",
+    )
+    speaking_seconds: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=3600,
+        description="For spoken answers (voice mock): how long the candidate spoke. Enables delivery metrics (wpm, filler words).",
     )
 
 
@@ -282,3 +303,68 @@ class ChatTurnPayload(BaseModel):
     )
 
 
+
+
+# --- End-of-session report ---
+
+
+class StarBreakdownRead(BaseModel):
+    situation: bool = False
+    task: bool = False
+    action: bool = False
+    result: bool = False
+    note: Optional[str] = None
+
+
+class DeliveryRead(BaseModel):
+    """How a spoken answer was delivered (voice mock interviews)."""
+
+    speaking_seconds: Optional[float] = None
+    word_count: Optional[int] = None
+    wpm: Optional[int] = None
+    pace: Optional[Literal["slow", "good", "fast"]] = None
+    filler_count: int = 0
+    fillers: Dict[str, int] = Field(default_factory=dict)
+
+
+class DeliverySummary(BaseModel):
+    spoken_answers: int
+    average_wpm: Optional[int] = None
+    pace: Optional[Literal["slow", "good", "fast"]] = None
+    total_fillers: int = 0
+    top_fillers: Dict[str, int] = Field(default_factory=dict, description="Most frequent filler words.")
+
+
+class SessionReportItem(BaseModel):
+    """One answered question in the report."""
+
+    index: int = Field(..., description="1-based position among answered questions.")
+    question_message_id: uuid_pkg.UUID
+    question: str
+    answer: str
+    feedback: str
+    score: Optional[int] = None
+    difficulty: Optional[str] = None
+    question_type: Optional[str] = None
+    dimension_tags: List[str] = Field(default_factory=list)
+    topic: Optional[str] = None
+    model_answer: Optional[str] = None
+    star: Optional[StarBreakdownRead] = Field(default=None, description="STAR coverage; behavioral questions only.")
+    delivery: Optional[DeliveryRead] = Field(default=None, description="Spoken answers only.")
+
+
+class SessionReport(BaseModel):
+    """Stored end-of-session report."""
+
+    generated_at: datetime
+    generated_by: Literal["llm", "basic"] = Field(
+        ..., description="'basic' when the LLM was unavailable (no model answers / STAR)."
+    )
+    average_score: Optional[float] = None
+    questions_answered: int = 0
+    questions_skipped: int = 0
+    strengths: List[str] = Field(default_factory=list)
+    weak_topics: List[str] = Field(default_factory=list)
+    summary: Optional[str] = None
+    delivery: Optional[DeliverySummary] = Field(default=None, description="Present when the session had spoken answers.")
+    items: List[SessionReportItem] = Field(default_factory=list)

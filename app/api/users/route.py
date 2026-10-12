@@ -6,25 +6,31 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.rate_limit import llm_rate_limit
 from app.api.deps import get_current_user, get_db
 from app.api.users.schemas import (
     HomeSummaryCard,
     HomeSummaryItem,
     HomeSummaryPayload,
+    OnboardingStep,
     ReadinessSummaryResponse,
     ReadinessTrendItem,
+    TopicMasteryItem,
 )
 from app.common.http_response_model import CommonResponse
 from app.models import User
 from app.api.users.service import (
     get_cv_and_gap,
     get_jump_back_in_items,
+    get_onboarding_steps,
+    get_practice_next_items,
     get_readiness_trend_data,
     get_readiness_tracker_items,
     get_recent_session_stats,
     get_refine_cv_items,
 )
 from app.services.readiness_aggregator import compute_combined_readiness
+from app.services.topic_mastery import MASTERED_BOX, list_mastery, status_of, utcnow
 
 router = APIRouter()
 
@@ -33,6 +39,7 @@ LAST_N_SESSIONS = 5
 
 @router.get(
     "/me/readiness",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[dict],
     name="Get combined readiness",
     summary="Get combined readiness score (CV + sessions + gap) for current user.",
@@ -195,19 +202,21 @@ async def get_my_readiness_summary(
     "/me/home-summary",
     response_model=CommonResponse[HomeSummaryPayload],
     name="Get home summary",
-    summary="Get summary cards for the home/dashboard view (Jump Back In, Refine CV, Readiness Tracker).",
+    summary="Home dashboard cards (Jump Back In, Practice Next, Refine CV, Readiness Tracker) and onboarding steps.",
 )
 async def get_my_home_summary(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns three cards with actionable items for the Summary view:
-    - Jump Back In: recent sessions with session_id and href
+    Returns cards with actionable items for the Summary view, plus onboarding steps:
+    - Jump Back In: unfinished sessions first; completed ones link to their report
+    - Practice Next: weak / learning topics (spaced retry) that start a focused session
     - Refine CV: skill-gap suggestions with resume_id / job_posting_id
     - Readiness Tracker: readiness insights with session_id / job_posting_id and a Start practice CTA
     """
     jump_items = await get_jump_back_in_items(db=db, current_user=current_user, limit=5)
+    practice_items = await get_practice_next_items(db=db, current_user=current_user, limit=4)
     refine_items = await get_refine_cv_items(db=db, current_user=current_user, max_items=5)
     readiness_items = await get_readiness_tracker_items(db=db, current_user=current_user, limit=5)
 
@@ -217,6 +226,12 @@ async def get_my_home_summary(
             title="Jump Back In",
             icon="messages",
             items=[HomeSummaryItem(**it) for it in jump_items],
+        ),
+        HomeSummaryCard(
+            id="practice_next",
+            title="Practice Next",
+            icon="target",
+            items=[HomeSummaryItem(**it) for it in practice_items],
         ),
         HomeSummaryCard(
             id="refine_cv",
@@ -231,9 +246,38 @@ async def get_my_home_summary(
             items=[HomeSummaryItem(**it) for it in readiness_items],
         ),
     ]
-    payload = HomeSummaryPayload(cards=cards)
+    onboarding = [OnboardingStep(**step) for step in await get_onboarding_steps(db, current_user)]
+    payload = HomeSummaryPayload(cards=cards, onboarding=onboarding)
     return CommonResponse(
         success=True,
         message="Home summary retrieved successfully",
         payload=payload,
     )
+
+
+@router.get(
+    "/me/topic-mastery",
+    response_model=CommonResponse[List[TopicMasteryItem]],
+    name="Get topic mastery",
+    summary="Topics practiced so far with spaced-repetition status (weak / learning / mastered), weakest first.",
+)
+async def get_my_topic_mastery(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    now = utcnow()
+    rows = await list_mastery(db, current_user.id)
+    items = [
+        TopicMasteryItem(
+            topic=r.topic,
+            status=status_of(r),
+            attempts=r.attempts,
+            last_score=r.last_score,
+            avg_score=r.avg_score,
+            last_seen_at=r.last_seen_at,
+            next_due_at=r.next_due_at,
+            due=r.box < MASTERED_BOX and r.next_due_at is not None and r.next_due_at <= now,
+        )
+        for r in rows
+    ]
+    return CommonResponse(success=True, message="Topic mastery retrieved successfully", payload=items)

@@ -7,8 +7,8 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import ConfigDict
-from sqlalchemy import Column, UniqueConstraint, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, ForeignKey, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlmodel import Field, SQLModel
 
 
@@ -171,6 +171,11 @@ class PrepSession(UUIDModel, TimestampModel, table=True):
         nullable=False,
         description="Session status, e.g. ACTIVE or COMPLETED",
     )
+    role_level: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        description="Seniority the questions target (INTERN, ASE, SSE, OTHER). Inferred from the job posting or set by the user.",
+    )
     readiness_score: Optional[float] = Field(
         default=None,
         nullable=True,
@@ -184,6 +189,16 @@ class PrepSession(UUIDModel, TimestampModel, table=True):
             server_default=text("'{}'::jsonb"),
         ),
         description="Summary data such as strengths and areas_for_improvement.",
+    )
+    focus_topics: List[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+        description="Topics to prioritize when generating questions (e.g. weak topics from a previous report).",
+    )
+    report: Dict = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+        description="End-of-session report (see SessionReport); empty until the session is completed.",
     )
 
 
@@ -292,3 +307,43 @@ class CoverLetter(UUIDModel, TimestampModel, table=True):
         ),
         description="Metadata such as model, temperature, tone, language, etc.",
     )
+
+
+class LLMUsage(UUIDModel, TimestampModel, table=True):
+    """One row per LLM call: who/what triggered it, tokens, estimated cost, latency."""
+
+    __tablename__ = "llm_usage"
+
+    user_id: Optional[uuid_pkg.UUID] = Field(
+        default=None,
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True),
+    )
+    session_id: Optional[uuid_pkg.UUID] = Field(
+        default=None,
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("prep_sessions.id", ondelete="SET NULL"), nullable=True, index=True),
+    )
+    agent: str = Field(nullable=False, index=True, description="Calling agent, e.g. session_qa.evaluate.")
+    model: str = Field(nullable=False)
+    prompt_tokens: int = Field(default=0, nullable=False)
+    completion_tokens: int = Field(default=0, nullable=False)
+    cost_usd: Optional[float] = Field(default=None, nullable=True, description="Estimated cost; null if model price unknown.")
+    latency_ms: int = Field(default=0, nullable=False)
+    success: bool = Field(default=True, nullable=False)
+
+
+class TopicMastery(UUIDModel, TimestampModel, table=True):
+    """Per-user spaced-repetition state for an interview topic (see app.services.topic_mastery)."""
+
+    __tablename__ = "topic_mastery"
+    __table_args__ = (UniqueConstraint("user_id", "topic", name="uq_topic_mastery_user_topic"),)
+
+    user_id: uuid_pkg.UUID = Field(
+        sa_column=Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
+    )
+    topic: str = Field(nullable=False, description="Normalized topic name (lowercase).")
+    attempts: int = Field(default=0, nullable=False)
+    last_score: Optional[float] = Field(default=None, nullable=True)
+    avg_score: Optional[float] = Field(default=None, nullable=True, description="Exponential moving average of scores.")
+    box: int = Field(default=0, nullable=False, description="Leitner box: 0 = weak, higher = reviewed less often.")
+    last_seen_at: Optional[datetime] = Field(default=None, nullable=True)
+    next_due_at: Optional[datetime] = Field(default=None, nullable=True, index=True)

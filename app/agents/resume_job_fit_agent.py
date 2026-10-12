@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.services.llm import chat_completion, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -179,9 +180,7 @@ Analyze the fit and return the JSON object (fit_score, summary, tailored_suggest
 Analyze the fit and return the JSON object as specified (fit_score, summary, tailored_suggestions)."""
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("Resume–job fit: could not create OpenAI client: %s", e)
         raise ValueError("OpenAI client unavailable.") from e
@@ -193,7 +192,8 @@ Analyze the fit and return the JSON object as specified (fit_score, summary, tai
             len(resume_text),
             len(job_text),
         )
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="resume_job_fit.analyze",
             model=model,
             messages=[
                 {"role": "system", "content": RESUME_JOB_FIT_SYSTEM_PROMPT},

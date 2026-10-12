@@ -1,0 +1,901 @@
+"""
+Prep session service: context loading, message persistence, and the Q&A flows behind the
+session routes (/next-question, /chat, /send, /evaluate-answer).
+
+Agent calls raise ValueError when the LLM is unavailable; this module turns those into
+HTTP 503 so routes stay thin.
+"""
+
+import asyncio
+import uuid as uuid_pkg
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Sequence, Tuple
+
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agents.session_qa_agent import (
+    NEXT_QUESTION_SENTINEL,
+    AnswerEvaluationResult,
+    QuestionGenerationResult,
+    classify_and_redirect,
+    evaluate_answer,
+    evaluate_answer_stream,
+    generate_next_question,
+    generate_next_question_stream,
+    generate_session_title,
+    generate_tutor_chat_reply,
+    generate_tutor_chat_reply_stream,
+    summarize_session_feedback,
+)
+from app.agents.session_report_agent import generate_session_report
+from app.api.session.schemas import (
+    DeliveryRead,
+    DeliverySummary,
+    SessionReport,
+    SessionReportItem,
+    StarBreakdownRead,
+)
+from app.models import JobPosting, Message, PrepSession, Resume
+from app.schemas.common import RoleLevel, SenderType, SessionMode, SessionStatus
+from app.services.delivery import analyze_delivery, pace_hint, parse_fillers
+from app.services.difficulty import choose_difficulty, choose_question_type, infer_role_level
+from app.services.llm import current_session_id as llm_current_session_id
+from app.services.topic_mastery import due_weak_topics, normalize_topic, record_attempt
+
+# Update session summary (LLM) only every N FEEDBACK messages to reduce cost.
+SUMMARY_UPDATE_EVERY_N = 10
+
+# Every Nth question revisits a due weak topic from earlier sessions (spaced retry), ~25%.
+RETRY_EVERY_N = 4
+
+
+def _agent_unavailable(e: ValueError) -> HTTPException:
+    return HTTPException(status_code=503, detail=str(e))
+
+
+def _as_history(m: Message) -> Dict[str, Any]:
+    return {"sender": m.sender, "type": m.type, "content": m.content}
+
+
+@dataclass
+class _Performance:
+    last_question_difficulty: Optional[str]
+    scores: List[float]
+    question_types: List[Optional[str]]
+
+
+def _performance(messages: Sequence[Message]) -> _Performance:
+    """Difficulty of the latest question, scored-answer history, and question types asked so far."""
+    last_difficulty: Optional[str] = None
+    scores: List[float] = []
+    types: List[Optional[str]] = []
+    for m in messages:
+        meta = m.meta or {}
+        if m.type == "QUESTION":
+            last_difficulty = meta.get("difficulty")
+            types.append(meta.get("question_type"))
+        elif m.type == "FEEDBACK" and meta.get("redirect") != "true" and meta.get("score") is not None:
+            try:
+                scores.append(float(meta["score"]))
+            except (TypeError, ValueError):
+                pass
+    return _Performance(last_difficulty, scores, types)
+
+
+@dataclass
+class SessionContext:
+    """A prep session with its resume/job entities and the messages stored before this request."""
+
+    session: PrepSession
+    resume_entities: Dict[str, List[str]] = field(default_factory=dict)
+    job_entities: Dict[str, List[str]] = field(default_factory=dict)
+    messages: List[Message] = field(default_factory=list)
+    role_level: str = RoleLevel.ASE.value
+    # Weak topics from earlier sessions that are due for review (not covered in this session).
+    due_topics: List[str] = field(default_factory=list)
+
+    @property
+    def last_question(self) -> Optional[str]:
+        for m in reversed(self.messages):
+            if m.type == "QUESTION":
+                return m.content
+        return None
+
+    @property
+    def question_count(self) -> int:
+        return sum(1 for m in self.messages if m.type == "QUESTION")
+
+    def history(self, extra: Sequence[Message] = ()) -> List[Dict[str, Any]]:
+        """Messages for agent prompts: stored history plus messages added during this request."""
+        return [_as_history(m) for m in [*self.messages, *extra]]
+
+
+# --- Queries ----------------------------------------------------------------
+
+
+async def list_sessions(
+    db: AsyncSession,
+    user_id: uuid_pkg.UUID,
+    job_posting_id: Optional[uuid_pkg.UUID] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> Tuple[List[PrepSession], int]:
+    """User's sessions, most recently updated first, with the total count before paging."""
+    base_filter = PrepSession.user_id == user_id
+    if job_posting_id is not None:
+        base_filter = base_filter & (PrepSession.job_posting_id == job_posting_id)
+
+    total_result = await db.execute(select(func.count()).select_from(PrepSession).where(base_filter))
+    total_items = total_result.scalar_one() or 0
+
+    q = select(PrepSession).where(base_filter).order_by(PrepSession.updated_at.desc())
+    if offset is not None and limit is not None:
+        q = q.offset(offset).limit(limit)
+    result = await db.execute(q)
+    return list(result.scalars().all()), total_items
+
+
+async def list_messages(db: AsyncSession, session_id: uuid_pkg.UUID) -> List[Message]:
+    result = await db.execute(
+        select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def compute_readiness_from_feedback(db: AsyncSession, session_id: uuid_pkg.UUID) -> Optional[float]:
+    """Compute readiness_score as average of FEEDBACK message scores (on request)."""
+    result = await db.execute(
+        select(Message).where(
+            Message.session_id == session_id,
+            Message.type == "FEEDBACK",
+        )
+    )
+    scores: List[float] = []
+    for m in result.scalars().all():
+        raw = (m.meta or {}).get("score")
+        if raw is not None:
+            try:
+                scores.append(float(raw))
+            except (TypeError, ValueError):
+                pass
+    if not scores:
+        return None
+    return round(sum(scores) / len(scores), 2)
+
+
+async def load_context(
+    db: AsyncSession,
+    session_id: uuid_pkg.UUID,
+    role_level: Optional[str] = None,
+) -> SessionContext:
+    """Load prep session with resume, job posting, and messages. Raises 404 if missing."""
+    session_obj = await db.get(PrepSession, session_id)
+    if session_obj is None:
+        raise HTTPException(status_code=404, detail="Prep session not found.")
+    llm_current_session_id.set(session_obj.id)  # attribute LLM usage in this request to the session
+
+    resume_entities: Dict[str, List[str]] = {}
+    if session_obj.resume_id:
+        resume = await db.get(Resume, session_obj.resume_id)
+        if resume and resume.entities:
+            resume_entities = dict(resume.entities)
+
+    job_entities: Dict[str, List[str]] = {}
+    if session_obj.job_posting_id:
+        job = await db.get(JobPosting, session_obj.job_posting_id)
+        if job and job.entities:
+            job_entities = dict(job.entities)
+
+    messages = await list_messages(db, session_id)
+    covered = [
+        (m.meta or {}).get("topic") or (m.meta or {}).get("retry_topic")
+        for m in messages
+        if (m.meta or {}).get("topic") or (m.meta or {}).get("retry_topic")
+    ]
+    return SessionContext(
+        session=session_obj,
+        resume_entities=resume_entities,
+        job_entities=job_entities,
+        messages=messages,
+        due_topics=await due_weak_topics(db, session_obj.user_id, exclude=covered),
+        # Request override > session setting > inferred from job posting > ASE.
+        role_level=role_level
+        or session_obj.role_level
+        or infer_role_level(job_entities)
+        or RoleLevel.ASE.value,
+    )
+
+
+async def create_session(
+    db: AsyncSession,
+    user_id: uuid_pkg.UUID,
+    mode: str,
+    resume_id: Optional[uuid_pkg.UUID] = None,
+    job_posting_id: Optional[uuid_pkg.UUID] = None,
+    role_level: Optional[str] = None,
+    focus_topics: Optional[List[str]] = None,
+) -> PrepSession:
+    """Create an ACTIVE session. Without an explicit role_level, infer it from the job posting."""
+    if role_level is None and job_posting_id is not None:
+        job = await db.get(JobPosting, job_posting_id)
+        if job is not None:
+            role_level = infer_role_level(job.entities)
+    record = PrepSession(
+        user_id=user_id,
+        resume_id=resume_id,
+        job_posting_id=job_posting_id,
+        mode=mode,
+        status="ACTIVE",
+        role_level=role_level,
+        focus_topics=[t.strip() for t in (focus_topics or []) if t and t.strip()],
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+async def update_session(
+    db: AsyncSession,
+    prep_session: PrepSession,
+    title: Optional[str] = None,
+    mode: Optional[str] = None,
+    role_level: Optional[str] = None,
+) -> PrepSession:
+    """Rename (stored in summary.title), change mode, and/or change role level."""
+    if title is not None:
+        summary_dict = dict(prep_session.summary or {})
+        summary_dict["title"] = title
+        prep_session.summary = summary_dict
+    if mode is not None:
+        prep_session.mode = mode
+    if role_level is not None:
+        prep_session.role_level = role_level
+    db.add(prep_session)
+    await db.commit()
+    await db.refresh(prep_session)
+    return prep_session
+
+
+# --- Building blocks ----------------------------------------------------------
+
+
+async def save_message(
+    db: AsyncSession,
+    session_id: uuid_pkg.UUID,
+    sender: SenderType,
+    type: str,
+    content: str,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Message:
+    message = Message(session_id=session_id, sender=sender.value, type=type, content=content, meta=meta or {})
+    db.add(message)
+    await db.commit()
+    await db.refresh(message)
+    return message
+
+
+async def ask_next_question(
+    db: AsyncSession,
+    ctx: SessionContext,
+    extra_history: Sequence[Message] = (),
+    question_type: Optional[str] = None,
+    prefer_difficulty: Optional[str] = None,
+) -> Tuple[Message, QuestionGenerationResult]:
+    """Generate the next question and store it as an ASSISTANT QUESTION message.
+
+    Unless the caller asks for a difficulty / question type, they adapt to the session so far:
+    difficulty follows recent scores (see app.services.difficulty), and the type mix is balanced.
+    """
+    plan = _plan_question(ctx, extra_history, question_type, prefer_difficulty)
+    try:
+        result = await generate_next_question(**plan.agent_kwargs)
+    except ValueError as e:
+        raise _agent_unavailable(e) from e
+    return await _save_question(db, ctx, plan, result), result
+
+
+@dataclass
+class _QuestionPlan:
+    agent_kwargs: Dict[str, Any]
+    difficulty: str
+    difficulty_reason: str
+    retry_topic: Optional[str] = None
+
+
+def _pick_retry_topic(ctx: SessionContext, question_index: int) -> Optional[str]:
+    """A due weak topic for every RETRY_EVERY_N-th question, unless the session has its own focus."""
+    if ctx.session.focus_topics or not ctx.due_topics:
+        return None
+    if question_index % RETRY_EVERY_N != RETRY_EVERY_N - 1:
+        return None
+    asked = {normalize_topic((m.meta or {}).get("retry_topic")) for m in ctx.messages if m.type == "QUESTION"}
+    return next((t for t in ctx.due_topics if t not in asked), None)
+
+
+def _plan_question(
+    ctx: SessionContext,
+    extra_history: Sequence[Message],
+    question_type: Optional[str],
+    prefer_difficulty: Optional[str],
+) -> _QuestionPlan:
+    question_index = ctx.question_count
+    perf = _performance([*ctx.messages, *extra_history])
+    if prefer_difficulty:
+        difficulty, difficulty_reason = prefer_difficulty, "requested"
+    else:
+        choice = choose_difficulty(question_index, perf.last_question_difficulty, perf.scores)
+        difficulty, difficulty_reason = choice.difficulty, choice.reason
+    retry_topic = _pick_retry_topic(ctx, question_index)
+    focus_topics = [retry_topic] if retry_topic else list(ctx.session.focus_topics or [])
+    return _QuestionPlan(
+        agent_kwargs=dict(
+            role_level=ctx.role_level,
+            job_entities=ctx.job_entities,
+            resume_entities=ctx.resume_entities,
+            previous_messages=ctx.history(extra_history),
+            question_type=question_type or choose_question_type(perf.question_types),
+            question_index=question_index,
+            suggested_difficulty=difficulty,
+            focus_topics=focus_topics or None,
+        ),
+        difficulty=difficulty,
+        difficulty_reason=difficulty_reason,
+        retry_topic=retry_topic,
+    )
+
+
+async def _save_question(
+    db: AsyncSession, ctx: SessionContext, plan: _QuestionPlan, result: QuestionGenerationResult
+) -> Message:
+    meta: Dict[str, Any] = {"difficulty_reason": plan.difficulty_reason, "role_level": ctx.role_level}
+    meta["difficulty"] = result.difficulty or plan.difficulty
+    if result.question_type:
+        meta["question_type"] = result.question_type
+    if plan.retry_topic:
+        meta["retry_topic"] = plan.retry_topic
+    return await save_message(db, ctx.session.id, SenderType.ASSISTANT, "QUESTION", result.question, meta)
+
+
+async def save_redirect(db: AsyncSession, ctx: SessionContext, content: str) -> Message:
+    """Store a non-scored assistant reply (greeting/off-topic redirect or tutor reply)."""
+    return await save_message(db, ctx.session.id, SenderType.ASSISTANT, "FEEDBACK", content, {"redirect": "true"})
+
+
+async def classify(question: str, user_message: str) -> Optional[str]:
+    """Redirect text, NEXT_QUESTION_SENTINEL, or None for a substantive answer."""
+    try:
+        return await classify_and_redirect(question=question, user_message=user_message)
+    except ValueError as e:
+        raise _agent_unavailable(e) from e
+
+
+async def evaluate_and_save_feedback(
+    db: AsyncSession,
+    ctx: SessionContext,
+    question: str,
+    answer: str,
+) -> Tuple[Message, AnswerEvaluationResult]:
+    try:
+        result = await evaluate_answer(
+            question=question,
+            answer=answer,
+            role_level=ctx.role_level,
+            job_entities=ctx.job_entities,
+            resume_entities=ctx.resume_entities,
+        )
+    except ValueError as e:
+        raise _agent_unavailable(e) from e
+    return await _save_feedback(db, ctx, result), result
+
+
+async def _save_feedback(db: AsyncSession, ctx: SessionContext, result: AnswerEvaluationResult) -> Message:
+    meta: Dict[str, Any] = {"score": str(result.score)}
+    if result.dimension_tags:
+        meta["dimension_tags"] = ",".join(result.dimension_tags)
+    topic = normalize_topic(result.topic)
+    if topic:
+        meta["topic"] = topic
+    message = await save_message(db, ctx.session.id, SenderType.ASSISTANT, "FEEDBACK", result.feedback, meta)
+    # Spaced retry: only real evaluations carry a topic (the offline placeholder does not).
+    await record_attempt(db, ctx.session.user_id, topic, result.score)
+    return message
+
+
+async def update_session_after_feedback(db: AsyncSession, ctx: SessionContext, last_question: str) -> None:
+    """Set a session title once, and refresh the LLM summary every N feedback messages. Best effort."""
+    session_obj = ctx.session
+    try:
+        summary_dict: Dict[str, Any] = dict(session_obj.summary or {})
+        if not summary_dict.get("title"):
+            title_result = await generate_session_title(
+                role_level=ctx.role_level,
+                job_entities=ctx.job_entities,
+                resume_entities=ctx.resume_entities,
+                last_question=last_question,
+            )
+            if title_result.title:
+                summary_dict["title"] = title_result.title
+                session_obj.summary = summary_dict
+                db.add(session_obj)
+                await db.commit()
+    except ValueError:
+        pass
+
+    feedback_result = await db.execute(
+        select(Message).where(
+            Message.session_id == session_obj.id,
+            Message.type == "FEEDBACK",
+        )
+    )
+    feedback_messages = list(feedback_result.scalars().all())
+    if len(feedback_messages) % SUMMARY_UPDATE_EVERY_N != 0:
+        return
+    # Exclude redirect (greeting/off-topic) messages from summary
+    feedback_items = [
+        {"content": m.content, "meta": m.meta or {}}
+        for m in feedback_messages
+        if (m.meta or {}).get("redirect") != "true"
+    ]
+    try:
+        summary_result = await summarize_session_feedback(
+            role_level=ctx.role_level,
+            feedback_items=feedback_items,
+            job_entities=ctx.job_entities,
+            resume_entities=ctx.resume_entities,
+        )
+    except ValueError:
+        return  # Keep existing summary; readiness is computed on request
+    existing_summary: Dict[str, Any] = dict(session_obj.summary or {})
+    existing_summary["strengths"] = summary_result.strengths
+    existing_summary["areas_for_improvement"] = summary_result.areas_for_improvement
+    session_obj.summary = existing_summary
+    db.add(session_obj)
+    await db.commit()
+
+
+# --- Flows ------------------------------------------------------------------
+
+
+def _answer_meta(content: str, speaking_seconds: Optional[float]) -> Dict[str, Any]:
+    """Delivery metrics for spoken answers; plain typed answers have no meta."""
+    if speaking_seconds is None:
+        return {}
+    return {k: v for k, v in analyze_delivery(content, speaking_seconds).items() if v is not None}
+
+
+@dataclass
+class AnswerOutcome:
+    """Result of replying to the current question.
+
+    kind: "skip" (message is the next QUESTION), "redirect" (non-scored FEEDBACK), or
+    "evaluated" (scored FEEDBACK; evaluation is set).
+    """
+
+    kind: Literal["skip", "redirect", "evaluated"]
+    message: Message
+    evaluation: Optional[AnswerEvaluationResult] = None
+
+
+async def handle_answer(
+    db: AsyncSession,
+    ctx: SessionContext,
+    answer: str,
+    user_message: Optional[Message] = None,
+    prefer_difficulty: Optional[str] = None,
+) -> AnswerOutcome:
+    """Classify a reply to ctx.last_question, then skip, redirect, or evaluate it.
+
+    user_message: the stored USER message for this reply, if the caller stored one; it is
+    included in the history used to generate the next question on skip.
+    """
+    question = ctx.last_question
+    assert question is not None, "handle_answer requires a question in the session"
+    extra: Tuple[Message, ...] = (user_message,) if user_message is not None else ()
+
+    redirect_message = await classify(question, answer)
+    if redirect_message == NEXT_QUESTION_SENTINEL:
+        next_question, _ = await ask_next_question(db, ctx, extra, prefer_difficulty=prefer_difficulty)
+        return AnswerOutcome("skip", next_question)
+    if redirect_message:
+        return AnswerOutcome("redirect", await save_redirect(db, ctx, redirect_message))
+
+    feedback, evaluation = await evaluate_and_save_feedback(db, ctx, question, answer)
+    await update_session_after_feedback(db, ctx, question)
+    return AnswerOutcome("evaluated", feedback, evaluation)
+
+
+async def chat_turn(
+    db: AsyncSession,
+    ctx: SessionContext,
+    content: str,
+    prefer_difficulty: Optional[str] = None,
+    speaking_seconds: Optional[float] = None,
+) -> Tuple[List[Message], str]:
+    """Unified chat turn. Stores the USER message, then replies depending on mode and state.
+
+    Returns the messages created during the turn (in order) and a status message.
+    """
+    user_message = await save_message(db, ctx.session.id, SenderType.USER, "ANSWER", content, _answer_meta(content, speaking_seconds))
+    new_messages: List[Message] = [user_message]
+
+    if ctx.session.mode == SessionMode.TUTOR_CHAT.value:
+        try:
+            reply = await generate_tutor_chat_reply(
+                role_level=ctx.role_level,
+                job_entities=ctx.job_entities,
+                resume_entities=ctx.resume_entities,
+                previous_messages=ctx.history(),
+                user_message=content,
+            )
+        except ValueError as e:
+            raise _agent_unavailable(e) from e
+        new_messages.append(await save_redirect(db, ctx, reply))
+        return new_messages, "Chat turn processed: tutor reply generated."
+
+    if not ctx.last_question:
+        question, _ = await ask_next_question(db, ctx, (user_message,), prefer_difficulty=prefer_difficulty)
+        new_messages.append(question)
+        return new_messages, "Chat turn processed: first question generated."
+
+    outcome = await handle_answer(db, ctx, content, user_message, prefer_difficulty)
+    new_messages.append(outcome.message)
+    if outcome.kind == "skip":
+        return new_messages, "Chat turn processed: next question (user skipped)."
+    if outcome.kind == "redirect":
+        return new_messages, "Chat turn processed: redirect response (greeting/off-topic)."
+
+    try:
+        next_question, _ = await ask_next_question(
+            db, ctx, (user_message, outcome.message), prefer_difficulty=prefer_difficulty
+        )
+    except HTTPException:
+        # If next-question generation fails, still return feedback
+        return new_messages, "Chat turn processed: feedback stored (next question generation failed)."
+    new_messages.append(next_question)
+    return new_messages, "Chat turn processed: feedback and next question stored."
+
+
+# --- Streaming chat turn ----------------------------------------------------------
+
+StreamEvent = Tuple[str, Dict[str, Any]]
+
+
+class _StreamError(Exception):
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+
+
+async def _stream_question(
+    db: AsyncSession,
+    ctx: SessionContext,
+    extra_history: Sequence[Message],
+    prefer_difficulty: Optional[str],
+) -> AsyncIterator[Any]:
+    """Yields ("question.delta", text) events, then the stored QUESTION Message."""
+    plan = _plan_question(ctx, extra_history, None, prefer_difficulty)
+    result: Optional[QuestionGenerationResult] = None
+    try:
+        async for item in generate_next_question_stream(**plan.agent_kwargs):
+            if isinstance(item, str):
+                yield ("question.delta", {"text": item})
+            else:
+                result = item
+    except ValueError as e:
+        raise _StreamError(503, str(e)) from e
+    assert result is not None
+    yield await _save_question(db, ctx, plan, result)
+
+
+async def _speculative_evaluation(
+    ctx: SessionContext, question: str, answer: str, queue: "asyncio.Queue[Any]"
+) -> None:
+    """Run the streaming evaluation into a queue; ends with the result or an exception."""
+    try:
+        async for item in evaluate_answer_stream(
+            question=question,
+            answer=answer,
+            role_level=ctx.role_level,
+            job_entities=ctx.job_entities,
+            resume_entities=ctx.resume_entities,
+        ):
+            await queue.put(item)
+    except Exception as e:  # surfaced to the consumer
+        await queue.put(e)
+
+
+async def chat_turn_stream(
+    db: AsyncSession,
+    ctx: SessionContext,
+    content: str,
+    prefer_difficulty: Optional[str] = None,
+    speaking_seconds: Optional[float] = None,
+) -> AsyncIterator[StreamEvent]:
+    """Streaming version of chat_turn. Stores exactly the same messages.
+
+    Events (name, data):
+      message            {"message": Message}   a stored message (user answer, feedback, question, ...)
+      feedback.delta     {"text": str}          evaluation / tutor / redirect text as it is generated
+      question.delta     {"text": str}          next question text as it is generated
+      done               {"status": str}
+      error              {"status": int, "detail": str}
+
+    For a reply to a question, evaluation starts in parallel with classification; its text is
+    held back until classification confirms a substantive answer (and discarded otherwise).
+    """
+    user_message = await save_message(db, ctx.session.id, SenderType.USER, "ANSWER", content, _answer_meta(content, speaking_seconds))
+    yield ("message", {"message": user_message})
+
+    try:
+        if ctx.session.mode == SessionMode.TUTOR_CHAT.value:
+            parts: List[str] = []
+            try:
+                async for delta in generate_tutor_chat_reply_stream(
+                    role_level=ctx.role_level,
+                    job_entities=ctx.job_entities,
+                    resume_entities=ctx.resume_entities,
+                    previous_messages=ctx.history(),
+                    user_message=content,
+                ):
+                    parts.append(delta)
+                    yield ("feedback.delta", {"text": delta})
+            except ValueError as e:
+                raise _StreamError(503, str(e)) from e
+            reply = await save_redirect(db, ctx, "".join(parts).strip())
+            yield ("message", {"message": reply})
+            yield ("done", {"status": "Chat turn processed: tutor reply generated."})
+            return
+
+        question = ctx.last_question
+        if not question:
+            async for item in _stream_question(db, ctx, (user_message,), prefer_difficulty):
+                yield item if isinstance(item, tuple) else ("message", {"message": item})
+            yield ("done", {"status": "Chat turn processed: first question generated."})
+            return
+
+        queue: "asyncio.Queue[Any]" = asyncio.Queue()
+        evaluation_task = asyncio.create_task(_speculative_evaluation(ctx, question, content, queue))
+        try:
+            try:
+                redirect_message = await classify_and_redirect(question=question, user_message=content)
+            except ValueError as e:
+                raise _StreamError(503, str(e)) from e
+
+            if redirect_message == NEXT_QUESTION_SENTINEL or redirect_message:
+                evaluation_task.cancel()
+                if redirect_message == NEXT_QUESTION_SENTINEL:
+                    async for item in _stream_question(db, ctx, (user_message,), prefer_difficulty):
+                        yield item if isinstance(item, tuple) else ("message", {"message": item})
+                    yield ("done", {"status": "Chat turn processed: next question (user skipped)."})
+                else:
+                    yield ("message", {"message": await save_redirect(db, ctx, redirect_message)})
+                    yield ("done", {"status": "Chat turn processed: redirect response (greeting/off-topic)."})
+                return
+
+            evaluation: Optional[AnswerEvaluationResult] = None
+            while evaluation is None:
+                item = await queue.get()
+                if isinstance(item, ValueError):
+                    raise _StreamError(503, str(item))
+                if isinstance(item, Exception):
+                    raise item
+                if isinstance(item, str):
+                    yield ("feedback.delta", {"text": item})
+                else:
+                    evaluation = item
+        finally:
+            if not evaluation_task.done():
+                evaluation_task.cancel()
+
+        feedback = await _save_feedback(db, ctx, evaluation)
+        yield ("message", {"message": feedback})
+
+        try:
+            async for item in _stream_question(db, ctx, (user_message, feedback), prefer_difficulty):
+                yield item if isinstance(item, tuple) else ("message", {"message": item})
+            status = "Chat turn processed: feedback and next question stored."
+        except _StreamError:
+            # If next-question generation fails, still keep the feedback
+            status = "Chat turn processed: feedback stored (next question generation failed)."
+        # Title / summary after the user already has the reply (off the critical path).
+        await update_session_after_feedback(db, ctx, question)
+        yield ("done", {"status": status})
+    except _StreamError as e:
+        yield ("error", {"status": e.status, "detail": e.detail})
+
+
+# --- End-of-session report ----------------------------------------------------------
+
+
+@dataclass
+class _AnsweredQuestion:
+    question: Message
+    answer: Message
+    feedback: Message
+
+
+def collect_answered(messages: Sequence[Message]) -> Tuple[List[_AnsweredQuestion], int]:
+    """Pair each QUESTION with the answer that got a scored FEEDBACK. Also count skipped questions.
+
+    Redirect replies (greetings / off-topic) do not count as answers; a question followed by
+    another question without a scored answer was skipped.
+    """
+    answered: List[_AnsweredQuestion] = []
+    skipped = 0
+    question: Optional[Message] = None
+    answer: Optional[Message] = None
+    for m in messages:
+        meta = m.meta or {}
+        if m.type == "QUESTION":
+            if question is not None:
+                skipped += 1
+            question, answer = m, None
+        elif m.type == "ANSWER" and m.sender == SenderType.USER.value:
+            answer = m
+        elif m.type == "FEEDBACK":
+            if meta.get("redirect") == "true":
+                answer = None
+            elif question is not None and answer is not None and meta.get("score") is not None:
+                answered.append(_AnsweredQuestion(question, answer, m))
+                question, answer = None, None
+    return answered, skipped
+
+
+def _score(m: Message) -> Optional[int]:
+    try:
+        return int(float((m.meta or {}).get("score")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _tags(m: Message) -> List[str]:
+    raw = (m.meta or {}).get("dimension_tags") or ""
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def _basic_strengths_and_weak_topics(items: List[SessionReportItem]) -> Tuple[List[str], List[str]]:
+    """Without the LLM: dimension tags with high / low average scores."""
+    by_tag: Dict[str, List[int]] = {}
+    for item in items:
+        for tag in item.dimension_tags:
+            if item.score is not None:
+                by_tag.setdefault(tag, []).append(item.score)
+    averages = [(sum(v) / len(v), tag) for tag, v in by_tag.items()]
+    strengths = [tag for avg, tag in sorted(averages, key=lambda x: (-x[0], x[1])) if avg >= 75][:3]
+    weak = [tag for avg, tag in sorted(averages) if avg < 60][:3]
+    return strengths, weak
+
+
+def _int(value: Any) -> Optional[int]:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _delivery(answer: Message) -> Optional[DeliveryRead]:
+    meta = answer.meta or {}
+    if meta.get("spoken") != "true":
+        return None
+    wpm = _int(meta.get("wpm"))
+    try:
+        seconds = float(meta.get("speaking_seconds"))
+    except (TypeError, ValueError):
+        seconds = None
+    return DeliveryRead(
+        speaking_seconds=seconds,
+        word_count=_int(meta.get("word_count")),
+        wpm=wpm,
+        pace=pace_hint(wpm),
+        filler_count=_int(meta.get("filler_count")) or 0,
+        fillers=parse_fillers(meta.get("fillers")),
+    )
+
+
+def _delivery_summary(items: List[SessionReportItem]) -> Optional[DeliverySummary]:
+    spoken = [i.delivery for i in items if i.delivery is not None]
+    if not spoken:
+        return None
+    rates = [d.wpm for d in spoken if d.wpm is not None]
+    totals: Dict[str, int] = {}
+    for d in spoken:
+        for name, n in d.fillers.items():
+            totals[name] = totals.get(name, 0) + n
+    avg_wpm = round(sum(rates) / len(rates)) if rates else None
+    return DeliverySummary(
+        spoken_answers=len(spoken),
+        average_wpm=avg_wpm,
+        pace=pace_hint(avg_wpm),
+        total_fillers=sum(d.filler_count for d in spoken),
+        top_fillers=dict(sorted(totals.items(), key=lambda kv: -kv[1])[:5]),
+    )
+
+
+async def build_report(ctx: SessionContext) -> SessionReport:
+    """Report from stored messages, enriched by the report agent (model answers, STAR, topics)
+    when available; a basic report otherwise."""
+    answered, skipped = collect_answered(ctx.messages)
+    items = [
+        SessionReportItem(
+            index=i,
+            question_message_id=a.question.id,
+            question=a.question.content,
+            answer=a.answer.content,
+            feedback=a.feedback.content,
+            score=_score(a.feedback),
+            difficulty=(a.question.meta or {}).get("difficulty"),
+            question_type=(a.question.meta or {}).get("question_type"),
+            dimension_tags=_tags(a.feedback),
+            topic=(a.feedback.meta or {}).get("topic"),
+            delivery=_delivery(a.answer),
+        )
+        for i, a in enumerate(answered, 1)
+    ]
+    scores = [i.score for i in items if i.score is not None]
+    report = SessionReport(
+        generated_at=datetime.now(timezone.utc),
+        generated_by="basic",
+        average_score=round(sum(scores) / len(scores), 1) if scores else None,
+        questions_answered=len(items),
+        questions_skipped=skipped,
+        items=items,
+    )
+    report.strengths, report.weak_topics = _basic_strengths_and_weak_topics(items)
+    report.delivery = _delivery_summary(items)
+    if not items:
+        return report
+
+    try:
+        insights = await generate_session_report(
+            role_level=ctx.role_level,
+            job_entities=ctx.job_entities,
+            answered=[
+                {
+                    "index": it.index,
+                    "question": it.question,
+                    "question_type": it.question_type,
+                    "answer": it.answer,
+                    "score": it.score,
+                    "feedback": it.feedback,
+                }
+                for it in items
+            ],
+        )
+    except ValueError:
+        return report
+
+    by_index = {ins.index: ins for ins in insights.items}
+    for item in items:
+        ins = by_index.get(item.index)
+        if ins is None:
+            continue
+        item.topic = ins.topic or item.topic
+        item.model_answer = ins.model_answer
+        if ins.star is not None and item.question_type == "behavioral":
+            item.star = StarBreakdownRead(**ins.star.model_dump())
+    report.generated_by = "llm"
+    report.strengths = insights.strengths or report.strengths
+    report.weak_topics = insights.weak_topics or report.weak_topics
+    report.summary = insights.summary
+    return report
+
+
+async def complete_session(db: AsyncSession, ctx: SessionContext, regenerate: bool = False) -> SessionReport:
+    """Mark the session COMPLETED and store its report (reuses an existing one unless regenerate)."""
+    session_obj = ctx.session
+    if session_obj.report and not regenerate:
+        return SessionReport.model_validate(session_obj.report)
+    report = await build_report(ctx)
+    session_obj.report = report.model_dump(mode="json")
+    session_obj.status = SessionStatus.COMPLETED.value
+    if report.average_score is not None:
+        session_obj.readiness_score = report.average_score
+    db.add(session_obj)
+    await db.commit()
+    await db.refresh(session_obj)
+    return report

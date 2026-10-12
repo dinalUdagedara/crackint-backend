@@ -16,6 +16,7 @@ from app.api.match.route import router as match_router
 from app.api.users.route import router as users_router
 from app.api.stt.route import router as stt_router
 from app.api.uploads.route import router as uploads_router
+from app.api.tts_speech.route import router as tts_router
 
 api_router = APIRouter()
 
@@ -31,3 +32,4 @@ api_router.include_router(users_router, prefix="/users", tags=["users"])
 api_router.include_router(stt_router, prefix="/stt", tags=["stt"])
 api_router.include_router(cover_letter_router, prefix="/cover-letter", tags=["cover-letter"])
 api_router.include_router(uploads_router, prefix="/uploads", tags=["uploads"])
+api_router.include_router(tts_router, prefix="/tts", tags=["tts"])

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.rate_limit import llm_rate_limit
 from app.api.deps import get_current_user, get_db
 from app.api.resume.schemas import (
     DeleteAllResumesResponse,
@@ -138,6 +139,7 @@ def _save_cv_score_to_resume(
 
 @router.post(
     "/score",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[ResumeScoreResponse],
     name="Score CV from file",
     summary="Score a CV from PDF, image (vision), or Word (.docx) as text.",
@@ -209,6 +211,7 @@ async def post_resume_score(
 
 @router.get(
     "/{resume_id}/score",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[ResumeScoreResponse],
     name="Score resume by ID",
     summary="Return stored CV score or run LLM and save. Uses stored raw_text when running LLM.",
@@ -287,6 +290,8 @@ async def get_resume_score(
 
 @router.post(
     "/preview-extract",
+    # Requires a logged-in user (also rate-limited): may call the LLM.
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[ResumeExtractPreviewResponse],
     name="Preview extracted text and entities",
     summary="Return the text passed to the NER model and extracted entities (no DB save). Use to monitor PDF extraction and model input.",
@@ -367,6 +372,7 @@ async def preview_resume_extract(
 
 @router.post(
     "/extract",
+    dependencies=[Depends(llm_rate_limit)],
     response_model=CommonResponse[ResumeExtractResponse],
     name="Extract entities from resume",
     summary="Extract entities (NAME, EMAIL, SKILL, etc.) from resume PDF or raw text.",
