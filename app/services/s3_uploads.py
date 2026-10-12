@@ -60,7 +60,6 @@ def upload_image_to_s3(
     region = _get_region()
 
     import boto3
-    from botocore.exceptions import ClientError
 
     client_kwargs = {"region_name": region}
     # Prefer IAM role credentials in AWS (ECS task role). Fall back to explicit keys if provided.

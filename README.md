@@ -46,7 +46,7 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
    ```bash
    python -m venv .venv
    source .venv/bin/activate   # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
+   pip install -r requirements.txt   # add -r requirements-dev.txt for tests
    ```
 
 2. Copy env template and set options (optional):
@@ -89,6 +89,28 @@ Use this when you want AWS to build the Docker image (instead of your laptop) an
    - Build the image from `Dockerfile`
    - Tag and push to ECR as `latest`
 5. Redeploy ECS service (force new deployment) to pull the new image.
+
+## Running tests
+
+Tests use a separate PostgreSQL database (`crackint_test`; the name must end in `_test`) and never call
+OpenAI, AWS or load the NER models, whatever your `.env` says.
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt   # or: poetry install
+createdb crackint_test
+DATABASE_NAME=crackint_test alembic upgrade head
+pytest                      # all tests
+ruff check --select F app tests
+```
+
+CI (`.github/workflows/ci.yml`) runs the same steps against a Postgres service on every pull request.
+
+## Production configuration
+
+Set `ENVIRONMENT=production` in deployed environments. The app then refuses to start unless:
+
+- `JWT_SECRET` is set to a unique value of at least 32 characters (e.g. `openssl rand -hex 32`), and
+- `CORS_ORIGINS` lists explicit frontend origins (comma-separated, no `*`). The same list is used for the HTTP API and Socket.IO.
 
 ## NER model paths
 

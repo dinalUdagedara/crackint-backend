@@ -20,6 +20,7 @@ class SessionMode(str, Enum):
     TARGETED = "TARGETED"
     QUICK_PRACTICE = "QUICK_PRACTICE"
     TUTOR_CHAT = "TUTOR_CHAT"
+    VOICE_MOCK = "VOICE_MOCK"
 
 
 class SessionStatus(str, Enum):

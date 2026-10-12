@@ -1,13 +1,19 @@
 """Admin business logic: user wipe and list queries."""
 
 import uuid as uuid_pkg
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.admin.schemas import AdminSessionListItem, AdminUserListItem
-from app.models import CoverLetter, JobPosting, PrepSession, Resume, User
+from app.api.admin.schemas import (
+    AdminSessionListItem,
+    AdminUserListItem,
+    LLMUsageBreakdownItem,
+    LLMUsageSummary,
+)
+from app.models import CoverLetter, JobPosting, LLMUsage, PrepSession, Resume, User
 from app.schemas.common import SessionStatus
 
 
@@ -133,3 +139,57 @@ async def list_sessions_admin(
             )
         )
     return items, total_items
+
+
+async def summarize_llm_usage(
+    db: AsyncSession,
+    user_id: Optional[uuid_pkg.UUID] = None,
+    session_id: Optional[uuid_pkg.UUID] = None,
+    since: Optional[datetime] = None,
+) -> LLMUsageSummary:
+    """Totals and per agent/model breakdown of LLM calls, optionally filtered."""
+    filters = []
+    if user_id is not None:
+        filters.append(LLMUsage.user_id == user_id)
+    if session_id is not None:
+        filters.append(LLMUsage.session_id == session_id)
+    if since is not None:
+        filters.append(LLMUsage.created_at >= since)
+
+    q = (
+        select(
+            LLMUsage.agent,
+            LLMUsage.model,
+            func.count().label("calls"),
+            func.count().filter(LLMUsage.success.is_(False)).label("failed_calls"),
+            func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
+            func.coalesce(func.sum(LLMUsage.cost_usd), 0.0).label("cost_usd"),
+            func.coalesce(func.avg(LLMUsage.latency_ms), 0.0).label("avg_latency_ms"),
+        )
+        .where(*filters)
+        .group_by(LLMUsage.agent, LLMUsage.model)
+        .order_by(func.sum(LLMUsage.cost_usd).desc().nulls_last())
+    )
+    rows = (await db.execute(q)).all()
+    breakdown = [
+        LLMUsageBreakdownItem(
+            agent=r.agent,
+            model=r.model,
+            calls=r.calls,
+            failed_calls=r.failed_calls,
+            prompt_tokens=int(r.prompt_tokens),
+            completion_tokens=int(r.completion_tokens),
+            cost_usd=round(float(r.cost_usd), 6),
+            avg_latency_ms=round(float(r.avg_latency_ms), 1),
+        )
+        for r in rows
+    ]
+    return LLMUsageSummary(
+        calls=sum(b.calls for b in breakdown),
+        failed_calls=sum(b.failed_calls for b in breakdown),
+        prompt_tokens=sum(b.prompt_tokens for b in breakdown),
+        completion_tokens=sum(b.completion_tokens for b in breakdown),
+        cost_usd=round(sum(b.cost_usd for b in breakdown), 6),
+        breakdown=breakdown,
+    )

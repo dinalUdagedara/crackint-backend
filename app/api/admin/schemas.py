@@ -55,3 +55,27 @@ class AdminSessionListItem(BaseModel):
     readiness_score: Optional[float] = None
     created_at: datetime
     updated_at: datetime
+
+
+class LLMUsageBreakdownItem(BaseModel):
+    """LLM usage totals for one agent + model."""
+
+    agent: str
+    model: str
+    calls: int
+    failed_calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float = Field(description="Sum of estimated cost; calls with unknown model price count as 0.")
+    avg_latency_ms: float
+
+
+class LLMUsageSummary(BaseModel):
+    """LLM usage totals for the filtered calls, with a per agent/model breakdown."""
+
+    calls: int
+    failed_calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+    breakdown: List[LLMUsageBreakdownItem]

@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.services.llm import chat_completion, get_client
 
 logger = logging.getLogger(__name__)
 
@@ -103,16 +104,15 @@ async def score_cv_from_vision(image_content_parts: List[dict]) -> CVScoreResult
     ]
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("CV scoring: could not create OpenAI client: %s", e)
         raise ValueError("OpenAI client unavailable.") from e
 
     try:
         logger.info("CV scoring: calling LLM (model=%s, vision parts=%d)", model, len(image_content_parts))
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="cv_scoring.vision",
             model=model,
             messages=[
                 {"role": "system", "content": CV_SCORING_SYSTEM_PROMPT},
@@ -151,16 +151,15 @@ async def score_cv_from_text(raw_text: str) -> CVScoreResult:
     user_content = CV_SCORING_TEXT_USER_PREFIX + (raw_text or "")[: 12000]
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("CV scoring: could not create OpenAI client: %s", e)
         raise ValueError("OpenAI client unavailable.") from e
 
     try:
         logger.info("CV scoring: calling LLM (model=%s, text len=%d)", model, len(user_content))
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="cv_scoring.text",
             model=model,
             messages=[
                 {"role": "system", "content": CV_SCORING_SYSTEM_PROMPT},

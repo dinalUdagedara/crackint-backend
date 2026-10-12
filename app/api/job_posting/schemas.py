@@ -2,7 +2,7 @@
 Request/response schemas for job posting APIs.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Literal, Optional
 
 import uuid as uuid_pkg
@@ -156,3 +156,32 @@ class JobPostingUpdate(BaseModel):
     application_url: Optional[str] = Field(default=None, description="Link to job ad or application page.")
     stage: Optional[str] = Field(default=None, description="Application stage, e.g. saved, applied, interview, offer.")
 
+
+
+class PrepPlanTask(BaseModel):
+    """One day of the prep plan."""
+
+    date: date
+    day_index: int = Field(description="1-based day in the plan.")
+    kind: Literal["skill_gap", "weak_topic", "behavioral", "practice", "mock_interview", "day_of", "deadline"]
+    title: str
+    description: str
+    minutes: int
+    focus_topics: List[str] = Field(default_factory=list, description="Pass to POST /sessions to start this task.")
+    mode: Literal["TARGETED", "QUICK_PRACTICE"]
+    done: bool = Field(description="A session for this job was practiced on this day.")
+    is_today: bool
+
+
+class PrepPlan(BaseModel):
+    """Day-by-day plan until the interview (or application deadline). Recomputed on every request."""
+
+    job_posting_id: uuid_pkg.UUID
+    resume_id: Optional[uuid_pkg.UUID] = Field(default=None, description="Resume used for skill gaps; use it when starting tasks.")
+    target_date: Optional[date] = None
+    target_type: Optional[Literal["interview", "deadline"]] = None
+    days_left: Optional[int] = None
+    avg_score: Optional[float] = Field(default=None, description="Average score of this job's practice sessions.")
+    missing_skills: List[str] = Field(default_factory=list)
+    weak_topics: List[str] = Field(default_factory=list)
+    tasks: List[PrepPlanTask] = Field(default_factory=list, description="Empty when there is no upcoming interview or deadline.")
