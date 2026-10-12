@@ -3,6 +3,7 @@ Shared dependencies for API routes (e.g. database session, current user).
 """
 
 import uuid
+from contextlib import aclosing
 from typing import AsyncGenerator
 
 from fastapi import Depends, HTTPException, Request, status
@@ -12,12 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.jwt import decode_token
 from app.database import db_session
 from app.models import User
+from app.services.llm import current_user_id as llm_current_user_id
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Yield a database session; rollback on exception, close on exit."""
-    async for session in db_session():
-        yield session
+    # aclosing: if the request raises (e.g. a 404 from a dependency), close the inner
+    # generator now instead of leaving the connection to be reclaimed by GC later.
+    async with aclosing(db_session()) as sessions:
+        async for session in sessions:
+            yield session
 
 
 async def get_current_user(
@@ -57,4 +62,17 @@ async def get_current_user(
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    llm_current_user_id.set(user.id)  # attribute LLM usage in this request to the user
     return user
+
+
+async def get_current_admin_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """Require authenticated user with is_admin=True."""
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return current_user

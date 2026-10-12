@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import JobPosting, Message, PrepSession, Resume, User
 from app.services.cv_scoring import score_cv_from_raw_text
 from app.services.skill_gap_service import analyze_skill_gap
+from app.services.topic_mastery import list_mastery, status_of, utcnow
 
 
 async def compute_session_readiness(
@@ -195,13 +196,14 @@ async def get_jump_back_in_items(
     limit: int = 5,
 ) -> List[Dict]:
     """
-    Build items for the Jump Back In card: recent sessions with title and session_id.
+    Build items for the Jump Back In card: unfinished (ACTIVE) sessions first, most recently
+    updated first; completed sessions link to their report.
     Returns list of dicts suitable for HomeSummaryItem (title, session_id, href).
     """
     result = await db.execute(
         select(PrepSession)
         .where(PrepSession.user_id == current_user.id)
-        .order_by(PrepSession.updated_at.desc())
+        .order_by((PrepSession.status == "ACTIVE").desc(), PrepSession.updated_at.desc())
         .limit(limit)
     )
     sessions = list(result.scalars().all())
@@ -211,12 +213,59 @@ async def get_jump_back_in_items(
         title = summary.get("title") if isinstance(summary, dict) else None
         if not title or not str(title).strip():
             title = "Practice session"
+        completed = s.status == "COMPLETED"
         items.append({
             "title": str(title).strip(),
+            "description": "Report ready" if completed else "In progress",
             "session_id": str(s.id),
-            "href": f"/sessions/{s.id}",
+            "href": f"/sessions/{s.id}/report" if completed and s.report else f"/sessions/{s.id}",
         })
     return items
+
+
+async def get_practice_next_items(
+    db: AsyncSession,
+    current_user: User,
+    limit: int = 4,
+) -> List[Dict]:
+    """
+    Build items for the Practice Next card: weak / learning topics from spaced retry, due ones
+    first. Each item starts a session focused on that topic (action_type start_focus_session).
+    """
+    rows = [r for r in await list_mastery(db, current_user.id) if status_of(r) != "mastered"]
+    now = utcnow()
+    rows.sort(key=lambda r: (not (r.next_due_at and r.next_due_at <= now), r.box, r.avg_score or 0))
+    items: List[Dict] = []
+    for r in rows[:limit]:
+        avg = f"avg {round(r.avg_score)}%" if r.avg_score is not None else None
+        due = "due now" if r.next_due_at and r.next_due_at <= now else None
+        items.append({
+            "title": r.topic,
+            "description": " · ".join(p for p in (avg, due) if p) or None,
+            "topic": r.topic,
+            "action_type": "start_focus_session",
+        })
+    return items
+
+
+async def get_onboarding_steps(db: AsyncSession, current_user: User) -> List[Dict]:
+    """Getting-started checklist derived from what the user already has."""
+
+    async def exists(query) -> bool:
+        return (await db.execute(query.limit(1))).first() is not None
+
+    has_resume = await exists(select(Resume.id).where(Resume.user_id == current_user.id))
+    has_job = await exists(select(JobPosting.id).where(JobPosting.user_id == current_user.id))
+    has_session = await exists(select(PrepSession.id).where(PrepSession.user_id == current_user.id))
+    has_report = await exists(
+        select(PrepSession.id).where(PrepSession.user_id == current_user.id, PrepSession.status == "COMPLETED")
+    )
+    return [
+        {"id": "upload_cv", "title": "Upload your CV", "done": has_resume, "href": "/cv-upload"},
+        {"id": "add_job", "title": "Add a job you're applying for", "done": has_job, "href": "/job-upload"},
+        {"id": "first_session", "title": "Answer your first interview question", "done": has_session, "href": "/sessions"},
+        {"id": "first_report", "title": "Finish a session to get your report", "done": has_report, "href": "/sessions"},
+    ]
 
 
 async def get_refine_cv_items(

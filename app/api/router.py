@@ -4,6 +4,7 @@ Central API router: include all feature routers under /api/v1.
 
 from fastapi import APIRouter
 
+from app.api.admin.route import router as admin_router
 from app.api.auth.route import router as auth_router
 from app.api.health.route import router as health_router
 from app.api.resume.route import router as resume_router
@@ -15,10 +16,12 @@ from app.api.match.route import router as match_router
 from app.api.users.route import router as users_router
 from app.api.stt.route import router as stt_router
 from app.api.uploads.route import router as uploads_router
+from app.api.tts_speech.route import router as tts_router
 
 api_router = APIRouter()
 
 api_router.include_router(auth_router, prefix="/auth", tags=["auth"])
+api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
 api_router.include_router(health_router, tags=["health"])
 api_router.include_router(resume_router, prefix="/resumes", tags=["resumes"])
 api_router.include_router(job_router, prefix="/jobs", tags=["jobs"])
@@ -29,3 +32,4 @@ api_router.include_router(users_router, prefix="/users", tags=["users"])
 api_router.include_router(stt_router, prefix="/stt", tags=["stt"])
 api_router.include_router(cover_letter_router, prefix="/cover-letter", tags=["cover-letter"])
 api_router.include_router(uploads_router, prefix="/uploads", tags=["uploads"])
+api_router.include_router(tts_router, prefix="/tts", tags=["tts"])

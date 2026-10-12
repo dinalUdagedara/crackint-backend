@@ -18,3 +18,7 @@ class JobExtractResponse(BaseModel):
         default=None,
         description="Raw text used for extraction (if client sent file). Omitted if client sent text.",
     )
+    source_file_url: str | None = Field(
+        default=None,
+        description="Public URL of the uploaded file in S3 when a file was sent and S3 is configured. Pass to POST /job-postings as source_file_url.",
+    )

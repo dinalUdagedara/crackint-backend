@@ -2,11 +2,11 @@
 Job posting CRUD endpoints.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import uuid as uuid_pkg
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
@@ -14,12 +14,15 @@ from app.api.job_posting.schemas import (
     DeleteJobPostingResponse,
     JobPostingCreate,
     JobPostingListItem,
+    JobPostingNearDeadlineItem,
     JobPostingReorderRequest,
     JobPostingUpdate,
+    PrepPlan,
     ReorderResponse,
 )
 from app.common.http_response_model import CommonResponse, PageMeta
 from app.models import JobPosting, User
+from app.services.prep_plan import get_prep_plan
 
 router = APIRouter()
 
@@ -141,6 +144,74 @@ async def reorder_job_postings(
 
 
 @router.get(
+    "/near-deadline",
+    response_model=CommonResponse[list[JobPostingNearDeadlineItem]],
+    name="List job postings near deadline",
+    summary="List job postings with a deadline or interview date within the next N days (for notifications/reminders).",
+)
+async def list_job_postings_near_deadline(
+    days: int = Query(
+        7,
+        ge=1,
+        le=90,
+        description="Include postings whose deadline or interview date falls within the next N days.",
+    ),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Returns job postings that have either a deadline or interview_at in the next `days` days.
+    Each item includes the job, the next milestone date, its type (deadline vs interview), and days_until.
+    Sorted by soonest milestone first.
+    """
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    end_utc = now_utc + timedelta(days=days)
+
+    q = (
+        select(JobPosting)
+        .where(JobPosting.user_id == current_user.id)
+        .where(
+            or_(
+                JobPosting.deadline.isnot(None),
+                JobPosting.interview_at.isnot(None),
+            ),
+        )
+    )
+    result = await session.execute(q)
+    rows = list(result.scalars().all())
+
+    out: list[JobPostingNearDeadlineItem] = []
+    for row in rows:
+        candidates: list[tuple[datetime, str]] = []
+        deadline_naive = _naive_utc(row.deadline) if row.deadline is not None else None
+        interview_naive = _naive_utc(row.interview_at) if row.interview_at is not None else None
+        if deadline_naive is not None and now_utc <= deadline_naive <= end_utc:
+            candidates.append((deadline_naive, "deadline"))
+        if interview_naive is not None and now_utc <= interview_naive <= end_utc:
+            candidates.append((interview_naive, "interview"))
+        if not candidates:
+            continue
+        next_date, next_type = min(candidates, key=lambda x: x[0])
+        delta = next_date - now_utc
+        days_until = max(0, delta.days)
+        out.append(
+            JobPostingNearDeadlineItem(
+                job=JobPostingListItem.model_validate(row),
+                next_milestone_date=next_date,
+                next_milestone_type=next_type,
+                days_until=days_until,
+            ),
+        )
+
+    out.sort(key=lambda x: x.next_milestone_date)
+    return CommonResponse(
+        success=True,
+        message="Job postings near deadline retrieved successfully",
+        payload=out,
+    )
+
+
+@router.get(
     "/{job_posting_id}",
     response_model=CommonResponse[JobPostingListItem],
     name="Get job posting by ID",
@@ -162,6 +233,24 @@ async def get_job_posting(
     )
 
 
+@router.get(
+    "/{job_posting_id}/prep-plan",
+    response_model=CommonResponse[PrepPlan],
+    name="Get prep plan",
+    summary="Day-by-day prep plan until the interview or deadline, from skill gaps, weak topics and scores.",
+)
+async def get_job_posting_prep_plan(
+    job_posting_id: uuid_pkg.UUID = Path(..., description="Job posting ID."),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await session.get(JobPosting, job_posting_id)
+    if row is None or row.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Job posting not found.")
+    plan = await get_prep_plan(session, current_user.id, row)
+    return CommonResponse(success=True, message="Prep plan generated", payload=PrepPlan(**plan))
+
+
 @router.post(
     "",
     response_model=CommonResponse[JobPostingListItem],
@@ -180,6 +269,7 @@ async def create_job_posting(
         user_id=current_user.id,
         entities=body.entities,
         raw_text=body.raw_text,
+        source_file_url=body.source_file_url,
         location=body.location,
         deadline=_naive_utc(body.deadline),
         cover_image_url=body.cover_image_url,
@@ -260,6 +350,8 @@ async def update_job_posting(
         row.display_order = body.display_order
     if "cover_image_url" in sent:
         row.cover_image_url = body.cover_image_url
+    if "source_file_url" in sent:
+        row.source_file_url = body.source_file_url
     if "notes" in sent:
         row.notes = body.notes
     if "questions_to_ask" in sent:

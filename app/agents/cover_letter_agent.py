@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.services.llm import chat_completion, get_client
 
 
 logger = logging.getLogger(__name__)
@@ -120,9 +121,7 @@ async def generate_cover_letter(context: CoverLetterContext) -> str:
     user_content = "\n".join(user_parts)
 
     try:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        get_client()
     except Exception as e:
         logger.error("Cover letter: could not create OpenAI client: %s", e)
         raise ValueError("OpenAI client unavailable.") from e
@@ -131,7 +130,8 @@ async def generate_cover_letter(context: CoverLetterContext) -> str:
     temperature = getattr(settings, "COVER_LETTER_AGENT_TEMPERATURE", 0.7)
 
     try:
-        response = await client.chat.completions.create(
+        response = await chat_completion(
+            agent="cover_letter.generate",
             model=model,
             messages=[
                 {"role": "system", "content": COVER_LETTER_SYSTEM_PROMPT},

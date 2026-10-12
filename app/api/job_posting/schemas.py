@@ -2,8 +2,8 @@
 Request/response schemas for job posting APIs.
 """
 
-from datetime import datetime
-from typing import Dict, List, Optional
+from datetime import date, datetime
+from typing import Dict, List, Literal, Optional
 
 import uuid as uuid_pkg
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +23,10 @@ class JobPostingListItem(BaseModel):
     raw_text: Optional[str] = Field(
         default=None,
         description="Raw job description text used for extraction, when available.",
+    )
+    source_file_url: Optional[str] = Field(
+        default=None,
+        description="URL of the original uploaded job file in S3 (from /jobs/extract or manual upload).",
     )
     location: Optional[str] = None
     deadline: Optional[datetime] = None
@@ -55,6 +59,10 @@ class JobPostingCreate(BaseModel):
     raw_text: Optional[str] = Field(
         default=None,
         description="Optional raw job description text used for extraction.",
+    )
+    source_file_url: Optional[str] = Field(
+        default=None,
+        description="Optional URL of uploaded job file (e.g. from /jobs/extract response or POST /uploads/document).",
     )
     location: Optional[str] = Field(
         default=None,
@@ -90,6 +98,24 @@ class ReorderResponse(BaseModel):
     updated: bool = Field(..., description="Whether the order was updated.")
 
 
+class JobPostingNearDeadlineItem(BaseModel):
+    """Job posting with its next upcoming milestone (deadline or interview) for notification/reminder use."""
+
+    job: JobPostingListItem = Field(..., description="The job posting.")
+    next_milestone_date: datetime = Field(
+        ...,
+        description="The date of the upcoming milestone (deadline or interview).",
+    )
+    next_milestone_type: Literal["deadline", "interview"] = Field(
+        ...,
+        description="Whether the milestone is an application deadline or an interview date.",
+    )
+    days_until: int = Field(
+        ...,
+        description="Whole days until the milestone (0 = today, 1 = tomorrow).",
+    )
+
+
 class DeleteJobPostingResponse(BaseModel):
     """Payload returned after deleting a single job posting."""
 
@@ -117,6 +143,10 @@ class JobPostingUpdate(BaseModel):
     )
     display_order: Optional[int] = Field(default=None, description="User-defined display order.")
     cover_image_url: Optional[str] = Field(default=None, description="Cover image URL (null to clear).")
+    source_file_url: Optional[str] = Field(
+        default=None,
+        description="Uploaded job file URL in S3 (null to clear).",
+    )
     notes: Optional[str] = Field(default=None, description="Free-form notes.")
     questions_to_ask: Optional[str] = Field(default=None, description="Questions to ask in the interview.")
     interview_at: Optional[datetime] = Field(default=None, description="Interview date/time (ISO 8601).")
@@ -126,3 +156,32 @@ class JobPostingUpdate(BaseModel):
     application_url: Optional[str] = Field(default=None, description="Link to job ad or application page.")
     stage: Optional[str] = Field(default=None, description="Application stage, e.g. saved, applied, interview, offer.")
 
+
+
+class PrepPlanTask(BaseModel):
+    """One day of the prep plan."""
+
+    date: date
+    day_index: int = Field(description="1-based day in the plan.")
+    kind: Literal["skill_gap", "weak_topic", "behavioral", "practice", "mock_interview", "day_of", "deadline"]
+    title: str
+    description: str
+    minutes: int
+    focus_topics: List[str] = Field(default_factory=list, description="Pass to POST /sessions to start this task.")
+    mode: Literal["TARGETED", "QUICK_PRACTICE"]
+    done: bool = Field(description="A session for this job was practiced on this day.")
+    is_today: bool
+
+
+class PrepPlan(BaseModel):
+    """Day-by-day plan until the interview (or application deadline). Recomputed on every request."""
+
+    job_posting_id: uuid_pkg.UUID
+    resume_id: Optional[uuid_pkg.UUID] = Field(default=None, description="Resume used for skill gaps; use it when starting tasks.")
+    target_date: Optional[date] = None
+    target_type: Optional[Literal["interview", "deadline"]] = None
+    days_left: Optional[int] = None
+    avg_score: Optional[float] = Field(default=None, description="Average score of this job's practice sessions.")
+    missing_skills: List[str] = Field(default_factory=list)
+    weak_topics: List[str] = Field(default_factory=list)
+    tasks: List[PrepPlanTask] = Field(default_factory=list, description="Empty when there is no upcoming interview or deadline.")

@@ -1,9 +1,10 @@
 """Request/response schemas for users API (readiness dashboard, etc.)."""
 
 import uuid as uuid_pkg
+from datetime import datetime
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class HomeSummaryItem(BaseModel):
@@ -20,8 +21,9 @@ class HomeSummaryItem(BaseModel):
     job_posting_id: Optional[str] = Field(default=None, description="Job posting ID for frontend routing.")
     action_type: Optional[str] = Field(
         default=None,
-        description="Optional action hint, e.g. start_session, open_cv, open_job.",
+        description="Optional action hint, e.g. start_session, start_focus_session, open_cv, open_job.",
     )
+    topic: Optional[str] = Field(default=None, description="Topic for start_focus_session items.")
 
 
 class HomeSummaryCard(BaseModel):
@@ -29,7 +31,7 @@ class HomeSummaryCard(BaseModel):
 
     id: str = Field(..., description="Card identifier, e.g. jump_back_in.")
     title: str = Field(..., description="Card display title.")
-    icon: Literal["messages", "sparkles", "shield"] = Field(
+    icon: Literal["messages", "sparkles", "shield", "target"] = Field(
         ...,
         description="Icon name for the card.",
     )
@@ -39,13 +41,23 @@ class HomeSummaryCard(BaseModel):
     )
 
 
+class OnboardingStep(BaseModel):
+    """One getting-started step; the home page shows the checklist until all are done."""
+
+    id: Literal["upload_cv", "add_job", "first_session", "first_report"]
+    title: str
+    done: bool
+    href: str
+
+
 class HomeSummaryPayload(BaseModel):
-    """Payload for GET /users/me/home-summary: three cards in fixed order."""
+    """Payload for GET /users/me/home-summary: cards in fixed order plus onboarding steps."""
 
     cards: List[HomeSummaryCard] = Field(
         ...,
-        description="Exactly three cards: Jump Back In, Refine CV, Readiness Tracker.",
+        description="Cards in order: Jump Back In, Practice Next, Refine CV, Readiness Tracker.",
     )
+    onboarding: List[OnboardingStep] = Field(default_factory=list)
 
 
 class ReadinessSummaryResponse(BaseModel):
@@ -106,3 +118,18 @@ class ReadinessTrendItem(BaseModel):
         default=None,
         description="Optional human-friendly session title from summary, if present.",
     )
+
+
+class TopicMasteryItem(BaseModel):
+    """Spaced-repetition state of one topic for the current user."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    topic: str
+    status: Literal["weak", "learning", "mastered"]
+    attempts: int
+    last_score: Optional[float] = None
+    avg_score: Optional[float] = None
+    last_seen_at: Optional[datetime] = Field(default=None, description="UTC (naive).")
+    next_due_at: Optional[datetime] = Field(default=None, description="UTC (naive); when the topic is due for review.")
+    due: bool = Field(description="True when the topic is due for review and not mastered.")

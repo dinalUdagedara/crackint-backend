@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Download the Resume NER model from Hugging Face and prepare it for the backend.
 

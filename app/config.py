@@ -4,7 +4,11 @@ Application configuration via environment variables.
 
 from typing import Optional
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_JWT_SECRET = "change-me-in-production-min-32-chars"
+MIN_JWT_SECRET_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -14,12 +18,17 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
+        extra="ignore",
     )
 
     APP_NAME: str = "Crackint Backend API"
     API_PREFIX: str = "/api/v1"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    # "development" or "production". Production enforces a real JWT secret and a CORS allow-list.
+    ENVIRONMENT: str = "development"
+    # Comma-separated list of allowed browser origins (HTTP API and Socket.IO). "*" allows any (dev only).
+    CORS_ORIGINS: str = "http://localhost:3000"
 
     # Database (PostgreSQL)
     DATABASE_HOST: str = "localhost"
@@ -54,7 +63,7 @@ class Settings(BaseSettings):
     CV_SCORING_ENABLED: bool = False
     CV_SCORING_MODEL: str = "gpt-4o-mini"
 
-    # Resume–job fit agent: LLM analysis of CV vs job posting (fit score, summary, suggestions)
+    # Resume–job fit agent: LLM analysis of CV vs job (fit score, summary, suggestions, location suitability)
     RESUME_JOB_FIT_LLM_ENABLED: bool = False
     RESUME_JOB_FIT_LLM_MODEL: str = "gpt-4o-mini"
 
@@ -63,8 +72,20 @@ class Settings(BaseSettings):
     COVER_LETTER_AGENT_MODEL: str = "gpt-4o-mini"
     COVER_LETTER_AGENT_TEMPERATURE: float = 0.7
 
+    # Shared LLM client (app/services/llm.py)
+    LLM_TIMEOUT_SECONDS: float = 60.0
+    # Retries on connection errors, 408/409/429 and 5xx (OpenAI SDK exponential backoff)
+    LLM_MAX_RETRIES: int = 2
+    # Persist one row per LLM call (model, tokens, cost, latency) to llm_usage
+    LLM_USAGE_TRACKING_ENABLED: bool = True
+    # Deterministic canned LLM replies (end-to-end tests / demos without an OpenAI key).
+    # Refused when ENVIRONMENT=production.
+    LLM_FAKE_RESPONSES: bool = False
+    # Per-user limit on LLM-backed endpoints (requests per minute, per process). 0 disables.
+    LLM_RATE_LIMIT_PER_MINUTE: int = 30
+
     # JWT authentication
-    JWT_SECRET: str = "change-me-in-production-min-32-chars"
+    JWT_SECRET: str = DEFAULT_JWT_SECRET
 
     # Google OAuth (for POST /auth/google - verify ID token and create/link user)
     GOOGLE_CLIENT_ID: Optional[str] = None
@@ -76,12 +97,50 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_DEFAULT_REGION: str = "us-east-1"
 
+    # Text-to-speech for voice mock interviews (OpenAI). If disabled/unavailable the
+    # frontend falls back to the browser's speechSynthesis.
+    TTS_ENABLED: bool = True
+    TTS_MODEL: str = "tts-1"
+    TTS_VOICE: str = "alloy"
+    TTS_MAX_CHARS: int = 1000
+
+    # Speech-to-text (AWS Transcribe over Socket.IO): max length of one recording, in seconds
+    STT_MAX_STREAM_SECONDS: int = 300
+
     # S3 uploads (cover images, etc.). If set, POST /uploads/image will upload to this bucket.
     S3_UPLOADS_BUCKET: Optional[str] = None
     # Region for uploads bucket (defaults to AWS_DEFAULT_REGION if not set)
     S3_UPLOADS_REGION: Optional[str] = None
     # Max size for cover/image uploads in MB (default 5)
     MAX_COVER_IMAGE_SIZE_MB: int = 5
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT.strip().lower() == "production"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parsed CORS_ORIGINS. ["*"] means any origin."""
+        origins = [o.strip().rstrip("/") for o in self.CORS_ORIGINS.split(",") if o.strip()]
+        return ["*"] if "*" in origins else origins
+
+    @model_validator(mode="after")
+    def _check_production_safety(self) -> "Settings":
+        """Refuse to start in production with an insecure secret or open CORS."""
+        if not self.is_production:
+            return self
+        if self.JWT_SECRET == DEFAULT_JWT_SECRET or len(self.JWT_SECRET) < MIN_JWT_SECRET_LENGTH:
+            raise ValueError(
+                f"JWT_SECRET must be set to a unique value of at least {MIN_JWT_SECRET_LENGTH} "
+                "characters when ENVIRONMENT=production."
+            )
+        if self.LLM_FAKE_RESPONSES:
+            raise ValueError("LLM_FAKE_RESPONSES must not be enabled when ENVIRONMENT=production.")
+        if "*" in self.cors_origins_list or not self.cors_origins_list:
+            raise ValueError(
+                "CORS_ORIGINS must list explicit origins (not '*') when ENVIRONMENT=production."
+            )
+        return self
 
     @property
     def DB_URL(self) -> str:
@@ -93,9 +152,10 @@ class Settings(BaseSettings):
 
     @property
     def DB_SYNC_URL(self) -> str:
-        """Sync PostgreSQL URL for Alembic migrations."""
+        """Sync PostgreSQL URL for Alembic migrations (explicit psycopg2 driver: SQLAlchemy 2.1
+        changed the default for postgresql:// to psycopg 3, which is not a dependency)."""
         return (
-            f"postgresql://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
+            f"postgresql+psycopg2://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
             f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
         )
 

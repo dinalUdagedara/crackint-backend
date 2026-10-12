@@ -54,22 +54,25 @@ async def extract_entities_from_file_bytes(
     content: bytes,
     content_type: str,
     run_agent: bool = False,
+    filename: str | None = None,
 ) -> tuple[str, Dict[str, List[str]]]:
     """
-    Extract text from job description file bytes (PDF or image via OCR), then run NER. If run_agent is True and the agent is configured,
-    validate and correct entities via the LLM. Returns (raw_text, entities).
+    Extract text from job description file bytes (PDF, image via OCR, or .docx), then run NER.
+    If run_agent is True and the agent is configured, validate and correct entities via the LLM.
+    Returns (raw_text, entities).
     """
     logger.info(
-        "Job extract: file input (bytes=%d, content_type=%s), run_agent=%s",
+        "Job extract: file input (bytes=%d, content_type=%s, filename=%s), run_agent=%s",
         len(content),
         content_type,
+        filename,
         run_agent,
     )
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
     try:
-        raw_text = extract_text_from_file(content, content_type)
+        raw_text = extract_text_from_file(content, content_type, filename)
     except ValueError as e:
         logger.warning("Job extract: text extraction failed: %s", e)
         raise HTTPException(status_code=400, detail=str(e)) from e

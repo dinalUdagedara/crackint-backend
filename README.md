@@ -6,7 +6,7 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 **Core (MVP)**  
 - **Personalized interview prep** — Upload resume + job poster; parse both for technical, behavioral, and system-design prep.  
-- **Chat-style interview sessions** — Interactive Q&A (ChatGPT-style) instead of rigid video.  
+- **Chat-style interview sessions** — Interactive text Q&A instead of rigid video.  
 - **AI feedback engine** — Semantic analysis of answers; feedback on content, clarity, relevance; per-session scores and overall readiness score.  
 - **Session history** — Each prep session saved as a chat thread; revisit and track progress over time.
 
@@ -46,7 +46,7 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
    ```bash
    python -m venv .venv
    source .venv/bin/activate   # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
+   pip install -r requirements.txt   # add -r requirements-dev.txt for tests
    ```
 
 2. Copy env template and set options (optional):
@@ -72,6 +72,28 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 
 4. Open docs: [http://localhost:8000/api/v1/docs](http://localhost:8000/api/v1/docs)
 
+## Running tests
+
+Tests use a separate PostgreSQL database (`crackint_test`; the name must end in `_test`) and never call
+OpenAI, AWS or load the NER models, whatever your `.env` says.
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt   # or: poetry install
+createdb crackint_test
+DATABASE_NAME=crackint_test alembic upgrade head
+pytest                      # all tests
+ruff check --select F app tests
+```
+
+CI (`.github/workflows/ci.yml`) runs the same steps against a Postgres service on every pull request.
+
+## Production configuration
+
+Set `ENVIRONMENT=production` in deployed environments. The app then refuses to start unless:
+
+- `JWT_SECRET` is set to a unique value of at least 32 characters (e.g. `openssl rand -hex 32`), and
+- `CORS_ORIGINS` lists explicit frontend origins (comma-separated, no `*`). The same list is used for the HTTP API and Socket.IO.
+
 ## NER model paths
 
 **Resume NER**  
@@ -79,7 +101,7 @@ Backend for **Crackint** — a personalized interview prep platform. FastAPI + P
 - **Google Drive:** The model can be stored in a shared Drive folder or as a single zip file. Set **`RESUME_NER_GDRIVE_FOLDER_ID`** or **`RESUME_NER_GDRIVE_FILE_ID`** so the app downloads at startup (`poetry install --with download` or `pip install gdown`), or run `python scripts/download_resume_ner_from_gdrive.py` (optionally with a folder ID or `--file FILE_ID`) then set **`RESUME_NER_LOAD_DIR=./model/resume_ner`**. See **RESUME_NER_SETUP.md** for details.
 - Alternatively, set `RESUME_NER_LOAD_DIR` to any directory that already contains the saved model (e.g. from your notebook or a manual Drive download). See **RESUME_NER_SETUP.md** for details.
 - If `RESUME_NER_LOAD_DIR` is not set or the path does not exist, the API still runs and returns stub/minimal rule-based extraction.
-- For a detailed description of the extraction pipeline (hybrid rules, model formats, tokenization), see **[docs/RESUME_EXTRACTION.md](docs/RESUME_EXTRACTION.md)**.
+- Implementation details (hybrid rules, model load, tokenization): see **`app/ml/resume_ner.py`** and **`RESUME_NER_SETUP.md`**.
 
 **Job poster NER**  
 - Set **`JOB_POSTER_NER_LOAD_DIR`** to the directory containing your job poster NER model (e.g. `./model/job_poster_ner`). The folder must contain `bert_bilstm_crf_state.pt`, `ner_config.json`, and the tokenizer files (`vocab.txt`, etc.). If not set or the path does not exist, job description extraction falls back to the resume NER pipeline.
